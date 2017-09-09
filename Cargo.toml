@@ -1,0 +1,9 @@
+[package]
+name = "rustlink"
+version = "0.1.0"
+authors = ["Michal Podhradsky <michal.podhradsky@galois.com>"]
+
+[dependencies]
+pprzlink = "0.2.0"
+ivyrust = "0.1.1"
+serial="0.4"
