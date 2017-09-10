@@ -24,11 +24,13 @@ use std::sync::Mutex;
 use std::sync::Arc;
 use time::*;
 use regex::Regex;
+use std::collections::VecDeque;
 
 lazy_static! {
-    static ref MSG_QUEUE: Mutex<Vec<PprzMessage>> = Mutex::new(vec![]);
+    static ref MSG_QUEUE: Mutex<VecDeque<PprzMessage>> = Mutex::new(VecDeque::new());
     static ref DICTIONARY: Mutex<Vec<PprzDictionary>> = Mutex::new(vec![]);
-    static ref RE_DATALINK: Regex = Regex::new("ground_dl .*").unwrap();
+    static ref PING_TIME: Mutex<Vec<Instant>> = Mutex::new(vec![Instant::now()]);
+    static ref RE_DATALINK: Regex = Regex::new("ground_dl .*").unwrap(); // TODO: factor out?
 }
 
 const PERIOD_MS: u64 = 50;
@@ -103,19 +105,76 @@ fn thread_ivy_main(ivy_bus: String) -> Result<(), Box<Error>> {
     ivyrust::ivy_main_loop()
 }
 
-fn thread_ping(period: u64) {
-	
-	
-	loop {
-		
-		
-		thread::sleep(time::Duration::from_millis(period));
-	}
+
+/// Match with PONG message
+/// that way we can update the ping time
+/// NOTE: it is not super exact (depending on how fast
+/// is the IVY bus, but it seems to be easier and probably
+/// good enough at least for now);
+fn pong_ivy_callback(_: Vec<String>) {
+    println!("Got PONG callback");
+    // we just got PONG back
+    // update the ping time
+    let mut time_lock = PING_TIME.lock();
+    if let Ok(ref mut ping_time) = time_lock {
+        if !ping_time.is_empty() {
+            let start_time = ping_time.pop().expect("PONG CALLBACK unwrap()");
+            let duration = start_time.elapsed();
+            println!("PONG TIME: {}",
+                     duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9);
+            ping_time.push(start_time);
+        }
+    }
 }
 
-fn thread_status_report(period: i32) {
-	
+/// Send PING message
+///
+/// Push PING at the beginning of the queue
+/// and then sleep for `period` ms
+fn thread_ping(period: u64, dictionary: Arc<PprzDictionary>) {
+    // subscribe the message
+    let pong_msg = dictionary
+        .find_msg_by_name(String::from("PONG").as_ref())
+        .unwrap();
+
+    //println!("Bindinfg with {}", pong_msg.to_ivy_regexpr());
+    let _ = ivy_bind_msg(pong_ivy_callback, pong_msg.to_ivy_regexpr());
+
+    // we need to send SYNC: get sync message
+    let ping_msg = dictionary
+        .find_msg_by_name(String::from("PING").as_ref())
+        .expect("Ping message not found");
+    loop {
+
+        // the sender ID is set to zero by default
+
+        // add at the beginning of the message gueue
+        {
+            let mut msg_lock = MSG_QUEUE.lock();
+            if let Ok(ref mut msg_queue) = msg_lock {
+                // push to front
+                println!("Pushing ping message");
+                msg_queue.push_front(ping_msg.clone());
+
+                println!("PING: Message queue len: {}", msg_queue.len());
+
+                // update the ping time
+                let mut time_lock = PING_TIME.lock();
+                if let Ok(ref mut ping_time) = time_lock {
+                    ping_time.pop().expect("PING_TIME is empty");
+                    let start_time = Instant::now();
+                    ping_time.push(start_time);
+                    println!("Updating PING TIME");
+                }
+            }
+        }
+
+
+        thread::sleep(time::Duration::from_millis(period));
+    }
 }
+
+fn thread_status_report(period: i32) {}
 
 
 
@@ -165,14 +224,14 @@ fn global_ivy_callback(mut data: Vec<String>) {
 
                         // update from strig
                         msg.update_from_string(&values);
-                        //println!("new message is: {}", msg);
+                        println!("new message is: {}", msg);
 
                         // if found, update the global msg
                         let mut msg_lock = MSG_QUEUE.lock();
                         if let Ok(ref mut msg_vector) = msg_lock {
                             // append at the end of vector
-                            msg_vector.push(msg);
-                            //println!("msg vector len = {}", msg_vector.len());
+                            msg_vector.push_back(msg);
+                            println!("Global callback: msg vector len = {}", msg_vector.len());
                         }
                         break;
                     }
@@ -205,9 +264,9 @@ fn global_ivy_callback(mut data: Vec<String>) {
 ///
 /// If new message from IVY bus is to be send, it saves it to the message queue (FIFO).
 fn thread_scheduler(port_name: OsString,
-                 baudrate: usize,
-                 dictionary: Arc<PprzDictionary>)
-                 -> Result<(), Box<Error>> {
+                    baudrate: usize,
+                    dictionary: Arc<PprzDictionary>)
+                    -> Result<(), Box<Error>> {
     let port = serial::open(&port_name)?;
     let mut port = match configure_port(port, baudrate) {
         Ok(port) => port,
@@ -240,8 +299,8 @@ fn thread_scheduler(port_name: OsString,
             let mut lock = MSG_QUEUE.try_lock();
             if let Ok(ref mut msg_queue) = lock {
                 while !msg_queue.is_empty() && (len <= MAX_MSG_SIZE) {
-                    // get a message from the queue
-                    let new_msg = msg_queue.pop().unwrap();
+                    // get a message from the front of the queue
+                    let new_msg = msg_queue.pop_front().unwrap();
 
                     // get a transort
                     let mut tx = PprzTransport::new();
@@ -260,7 +319,7 @@ fn thread_scheduler(port_name: OsString,
                         println!("too many messages, breaking from len={}", len);
                         break;
                     }
-                    //println!("Message queue len: {}", msg_queue.len());
+                    println!("Scheduler: Message queue len: {}", msg_queue.len());
                 }
             }
 
@@ -314,10 +373,14 @@ fn thread_scheduler(port_name: OsString,
 
                 // update message fields with real values
                 msg.update(&rx.buf);
-                
+
                 // check for PONG
-                
-                // check for DATALINK_REPORT 
+                if msg.name == "PONG" {
+                    // update time
+                    pong_ivy_callback(vec![]);
+                }
+
+                // check for DATALINK_REPORT
 
                 // send the message
                 ivyrust::ivy_send_msg(msg.to_string().unwrap());
@@ -345,16 +408,16 @@ fn main() {
 
 
     // HACK: rather than implementing Clone for the dictionary, we just build another dictionary
-    let file = File::open("/home/podhrad/Documents/Paparazzi/pprzlink/message_definitions/v1.0/messages.xml")
+    let file = File::open("/xxx/pprzlink/message_definitions/v1.0/messages.xml")
         .unwrap();
     // push into the callback dictionary
     DICTIONARY
         .lock()
         .unwrap()
         .push(parser::build_dictionary(file));
-        
-            // construct a dictionary
-    let file = File::open("/home/podhrad/Documents/Paparazzi/pprzlink/message_definitions/v1.0/messages.xml")
+
+    // construct a dictionary
+    let file = File::open("/xxx/pprzlink/message_definitions/v1.0/messages.xml")
         .unwrap();
     let dictionary = parser::build_dictionary(file);
     let dictionary = Arc::new(dictionary);
@@ -364,6 +427,7 @@ fn main() {
 
     // spin the main loop
     let ivy_bus = args.arg_ivy_bus;
+    let ping_period = args.arg_ping_period_ms;
     let t1 = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
                                println!("Error starting ivy thread: {}", e);
                            } else {
@@ -373,12 +437,19 @@ fn main() {
     // spin the serial loop
     let port = OsString::from(args.arg_port);
     let baudrate = args.arg_baudrate.unwrap() as usize;
-    let t2 = thread::spawn(move || if let Err(e) = thread_scheduler(port, baudrate, dictionary_scheduler) {
+    let t2 = thread::spawn(move || if let Err(e) = thread_scheduler(port,
+                                                                    baudrate,
+                                                                    dictionary_scheduler) {
                                println!("Error starting serial thread: {}", e);
                            } else {
                                println!("Serial thread finished");
                            });
 
+
+
+
+
+    let _ = thread::spawn(move || thread_ping(ping_period.unwrap(), dictionary_ping));
     let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
 
     // close
