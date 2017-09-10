@@ -1,32 +1,34 @@
 #[macro_use]
-extern crate docopt;
+extern crate lazy_static;
+
 extern crate regex;
 extern crate serial;
 extern crate ivyrust;
 extern crate pprzlink;
 
-use docopt::Docopt;
+
+
+
 use ivyrust::*;
 use std::{thread, time};
-use std::time::{SystemTime, UNIX_EPOCH};
 use std::io::prelude::*;
 use serial::prelude::*;
 use std::time::Duration;
 use std::error::Error;
-use std::ffi::{OsString, OsStr};
+use std::ffi::OsString;
 use std::fs::File;
 use pprzlink::parser;
 use pprzlink::parser::{PprzDictionary, PprzMsgClassID, PprzMessage, PprzMsgBaseType};
 use pprzlink::transport::PprzTransport;
-use std::cell::Cell;
+use std::sync::Mutex;
 use std::sync::Arc;
-use std::sync::mpsc;
 use time::*;
+use regex::Regex;
 
-#[derive(Debug, PartialEq)]
-enum LinkControlStatus {
-    Sending,
-    Receiving,
+lazy_static! {
+    static ref MSG_QUEUE: Mutex<Vec<PprzMessage>> = Mutex::new(vec![]);
+    static ref DICTIONARY: Mutex<Vec<PprzDictionary>> = Mutex::new(vec![]);
+    static ref RE_DATALINK: Regex = Regex::new("ground_dl .*").unwrap();
 }
 
 const PERIOD_MS: u64 = 50;
@@ -39,12 +41,12 @@ const MAX_MSG_SIZE: usize = 256;
 /// Includes the size of SYNC/CHANNEL message (7 bytes)
 const MSG_ONE_WAY_THRESHOLD: usize = 223;
 
-const USAGE: &'static str = "
-Usage: 
-  link -d <port> -s <baudrate>
-  link -d <port> -s <baudrate> -b <ivy-bus>
-  link (-h | --help)
- ";
+//const USAGE: &'static str = "
+//Usage:
+//  link -d <port> -s <baudrate>
+//  link -d <port> -s <baudrate> -b <ivy-bus>
+//  link (-h | --help)
+// ";
 
 
 #[derive(Debug)]
@@ -56,10 +58,10 @@ struct Args {
     arg_ivy_bus: String,
     arg_port: String,
     arg_baudrate: Option<i32>,
-    //arg_status_period: Option<i32>,
-    //arg_ping_period: Option<i32>,
-    //flag_status_period: bool,
-    //flag_ping_period: bool,
+    flag_ping: bool,
+    flag_datalink: bool,
+    arg_ping_period_ms: Option<u64>,
+    arg_datalink_period_ms: Option<u64>,
 }
 
 
@@ -80,7 +82,8 @@ fn configure_port(mut port: serial::SystemPort,
     };
 
     port.configure(&settings)?;
-    port.set_timeout(Duration::from_millis(0))?;
+    // sleeping for on millisecond seems to be a good compromise
+    port.set_timeout(Duration::from_millis(1))?;
 
     Ok(port)
 }
@@ -90,34 +93,100 @@ fn configure_port(mut port: serial::SystemPort,
 ///
 /// This thread only launchees `IvyMainLoop()` and loops forever
 /// Uses the optional argument specifying a non-default bus address
-fn ivy_main_thread(ivy_bus: String, tx: mpsc::Receiver<PprzMessage>) -> Result<(), Box<Error>> {
-    // connect to IVY bus
+fn thread_ivy_main(ivy_bus: String) -> Result<(), Box<Error>> {
     ivyrust::ivy_init(String::from("RustLink"), String::from("Ready"));
     if !ivy_bus.is_empty() {
         ivyrust::ivy_start(Some(ivy_bus));
     } else {
         ivyrust::ivy_start(None);
     }
-    
-    let x = PprzMessage::new();
-    
-    tx.send(PprzMessage::new());
-
     ivyrust::ivy_main_loop()
+}
+
+fn thread_ping(period: u64) {
+	
+	
+	loop {
+		
+		
+		thread::sleep(time::Duration::from_millis(period));
+	}
+}
+
+fn thread_status_report(period: i32) {
+	
 }
 
 
 
 
-/// Ivy bind thread
+/// This global callback is just a cludge,
+/// because we can not currently bind individual messages separately
+/// like `ivy_bind_msg(my_msg.callback(), my_msg.to_ivy_regexpr())`
 ///
-/// We bind to all Ivy messages, and then filter then using regexpr
-/// over the datalink messages.
-/// Ideally we would have a callback for each message, but that is currently
-/// not possible.
-fn ivy_listener_thread(dictionary: Arc<PprzDictionary>) -> Result<(), Box<Error>> {
+/// Instead, we use a shared static variable as `Vec<PprzMessage>` and
+/// another static variable for a `Vec<PprzDictionary>` to hold the parsed
+/// messages. When a callback is received, it will be a single string containing
+/// the whole message, for example '1 RTOS_MON 15 0 76280 0 495.53').
+///
+/// We parse the name and match it with regexpr for Datalink class, if it matches
+/// the global vec of messages will be updated.
+fn global_ivy_callback(mut data: Vec<String>) {
+    // TODO: we don't really need a regexpr, can just split and match the individual strings...
+    let data = &(data.pop().unwrap());
+    let mut lock = DICTIONARY.try_lock();
 
-    Ok(())
+    // continue only if the message came from the ground
+    if !RE_DATALINK.is_match(data) {
+        return;
+    }
+
+    if let Ok(ref mut dictionary_vector) = lock {
+        if !dictionary_vector.is_empty() {
+            let dictionary = dictionary_vector.pop().unwrap();
+            if dictionary.contains(PprzMsgClassID::Datalink) {
+                let msgs = dictionary
+                    .get_msgs(PprzMsgClassID::Datalink)
+                    .unwrap()
+                    .messages;
+
+                // iterate over messages
+                for mut msg in msgs {
+                    //let pattern = msg.to_ivy_regexpr();
+                    let pattern = String::from("ground_dl ") + &msg.name + " .*";
+                    let re = Regex::new(&pattern).unwrap();
+                    if re.is_match(data) {
+                        // parse the message and push it into the message queue
+                        let values: Vec<&str> = data.split(' ').collect();
+
+                        // set the sender to be 0 (that is default)
+
+                        // set msg name (but we already know it)
+
+                        // update from strig
+                        msg.update_from_string(&values);
+                        //println!("new message is: {}", msg);
+
+                        // if found, update the global msg
+                        let mut msg_lock = MSG_QUEUE.lock();
+                        if let Ok(ref mut msg_vector) = msg_lock {
+                            // append at the end of vector
+                            msg_vector.push(msg);
+                            //println!("msg vector len = {}", msg_vector.len());
+                        }
+                        break;
+                    }
+                }
+
+            } else {
+                println!("Dictionary doesn't contain Datalink message class");
+            }
+
+            // push the dictionary back (sight)
+            dictionary_vector.push(dictionary);
+        }
+
+    }
 }
 
 
@@ -135,9 +204,9 @@ fn ivy_listener_thread(dictionary: Arc<PprzDictionary>) -> Result<(), Box<Error>
 /// it over IVY bus.
 ///
 /// If new message from IVY bus is to be send, it saves it to the message queue (FIFO).
-fn serial_thread(port_name: OsString,
+fn thread_scheduler(port_name: OsString,
                  baudrate: usize,
-                 dictionary: Arc<PprzDictionary>, rx: mpsc::Receiver<PprzMessage>)
+                 dictionary: Arc<PprzDictionary>)
                  -> Result<(), Box<Error>> {
     let port = serial::open(&port_name)?;
     let mut port = match configure_port(port, baudrate) {
@@ -148,9 +217,6 @@ fn serial_thread(port_name: OsString,
     // initialize an emty buffer
     let mut buf = [0; 255]; // still have to manually allocate an array
     let mut rx = PprzTransport::new();
-
-    // initialize message queue
-    let mut msg_queue: Vec<PprzMessage> = vec![];
 
     // get current time
     let mut instant = Instant::now();
@@ -168,26 +234,34 @@ fn serial_thread(port_name: OsString,
 
             // look at how many messages are in the queue
             let mut len = 0;
-            let mut msg_buf = vec![];
-            for msg in &msg_queue {
-                // get a transort
-                let mut tx = PprzTransport::new();
-                // now we have a full message
-                tx.construct_pprz_msg(&msg.to_bytes());
+            let mut msg_buf: Vec<PprzTransport> = vec![];
 
-                // validate message length
-                if (len + tx.get_message_length()) <= MAX_MSG_SIZE {
-                    // increment lenght
-                    len += tx.get_message_length();
-                    // we have room for the message, so push it in
-                    msg_buf.push(tx);
-                } else {
-                    // we should abort counting here
-                    println!("too many message");
+            // try lock and don't wait
+            let mut lock = MSG_QUEUE.try_lock();
+            if let Ok(ref mut msg_queue) = lock {
+                while !msg_queue.is_empty() && (len <= MAX_MSG_SIZE) {
+                    // get a message from the queue
+                    let new_msg = msg_queue.pop().unwrap();
+
+                    // get a transort
+                    let mut tx = PprzTransport::new();
+
+                    // construct a message from the transport
+                    tx.construct_pprz_msg(&new_msg.to_bytes());
+
+                    // validate message length
+                    if (len + tx.get_message_length()) <= MAX_MSG_SIZE {
+                        // increment lenght
+                        len += tx.get_message_length();
+                        // we have room for the message, so push it in
+                        msg_buf.push(tx);
+                    } else {
+                        // we should abort counting here
+                        println!("too many messages, breaking from len={}", len);
+                        break;
+                    }
+                    //println!("Message queue len: {}", msg_queue.len());
                 }
-
-                // See what happened with the message queue - are we actually removing data?
-                println!("Message queue: {:?}", msg_queue);
             }
 
             // calculate the field value
@@ -200,7 +274,7 @@ fn serial_thread(port_name: OsString,
                 // double protection period (tx/rx)
                 delay = delay - PROTECTION_PERIOD as f32 * 2.0;
             }
-            println!("delay ={}, rounded to {}", delay, delay as u8);
+            //println!("delay ={}, rounded to {}", delay, delay as u8);
 
             // Set delay value
             sync_msg.fields[0].value = PprzMsgBaseType::Uint8(delay as u8);
@@ -208,23 +282,26 @@ fn serial_thread(port_name: OsString,
             // Send CHANNEL message
             let mut tx = PprzTransport::new();
             tx.construct_pprz_msg(&sync_msg.to_bytes());
-            let len = port.write(&tx.buf)?;
-            println!("Written {} bytes", len);
+            let _ = port.write(&tx.buf)?;
+            //println!("Written {} bytes", len);
 
             // Send our messages
             for msg_to_send in msg_buf {
                 let len = port.write(&msg_to_send.buf)?;
-                println!("Written {} bytes", len);
+                if len != msg_to_send.buf.len() {
+                    println!("Written {} bytes, but the message was {} bytes",
+                             len,
+                             msg_to_send.buf.len());
+                }
+
             }
 
         }
 
-        // read data
+        // read data (no timeout right now)
         let len = match port.read(&mut buf[..]) {
             Ok(len) => len,
-            Err(e) => {
-                continue;
-            } 
+            Err(_) => continue,
         };
 
         // parse received data and optionally send a message
@@ -237,28 +314,16 @@ fn serial_thread(port_name: OsString,
 
                 // update message fields with real values
                 msg.update(&rx.buf);
+                
+                // check for PONG
+                
+                // check for DATALINK_REPORT 
 
                 // send the message
                 ivyrust::ivy_send_msg(msg.to_string().unwrap());
             }
         }
-        
-        // check for messages from Ivy bus
-        rx.recv().unwrap();
-        /*
-        match rx.recv() {
-        	Ok(msg) => {
-        		println!("received a message!");
-        		msg_queue.push(msg);
-        	}
-        	Err(_) => {
-        		// this is a timeout error, so do nothing
-        	}
-        }
-        */
     }
-
-    Ok(())
 }
 
 
@@ -271,32 +336,35 @@ fn main() {
         arg_ivy_bus: String::new(),
         arg_port: String::from("/dev/ttyUSB0"),
         arg_baudrate: Some(57_600),
+        flag_ping: false,
+        flag_datalink: false,
+        arg_ping_period_ms: Some(1000 as u64),
+        arg_datalink_period_ms: Some(1000 as u64),
     };
-    /*
-    let args: Args = Docopt::new(USAGE);
-    println!("{:?}", args);
 
-    if args.flag_h {
-        println!("{}", USAGE);
-        return;
-    }
-    */
 
-    // construct a dictionary
-    let file = File::open("/xxx/v1.0/messages.xml")
+
+    // HACK: rather than implementing Clone for the dictionary, we just build another dictionary
+    let file = File::open("/home/podhrad/Documents/Paparazzi/pprzlink/message_definitions/v1.0/messages.xml")
+        .unwrap();
+    // push into the callback dictionary
+    DICTIONARY
+        .lock()
+        .unwrap()
+        .push(parser::build_dictionary(file));
+        
+            // construct a dictionary
+    let file = File::open("/home/podhrad/Documents/Paparazzi/pprzlink/message_definitions/v1.0/messages.xml")
         .unwrap();
     let dictionary = parser::build_dictionary(file);
     let dictionary = Arc::new(dictionary);
-    let d1 = Arc::clone(&dictionary);
-    let d2 = Arc::clone(&dictionary);
-
-
-	// construct a channel
-	let (tx, rx) = mpsc::channel();
+    let dictionary_scheduler = Arc::clone(&dictionary);
+    let dictionary_ping = Arc::clone(&dictionary);
+    let dictionary_status = Arc::clone(&dictionary);
 
     // spin the main loop
     let ivy_bus = args.arg_ivy_bus;
-    let t1 = thread::spawn(move || if let Err(e) = ivy_main_thread(ivy_bus, tx) {
+    let t1 = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
                                println!("Error starting ivy thread: {}", e);
                            } else {
                                println!("Ivy thread finished");
@@ -305,13 +373,13 @@ fn main() {
     // spin the serial loop
     let port = OsString::from(args.arg_port);
     let baudrate = args.arg_baudrate.unwrap() as usize;
-    let t2 = thread::spawn(move || if let Err(e) = serial_thread(port, baudrate, d2, rx) {
+    let t2 = thread::spawn(move || if let Err(e) = thread_scheduler(port, baudrate, dictionary_scheduler) {
                                println!("Error starting serial thread: {}", e);
                            } else {
                                println!("Serial thread finished");
                            });
 
-    //let t3 = thread::spawn
+    let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
 
     // close
     t1.join().expect("Error waiting for ivy thread to finish");
