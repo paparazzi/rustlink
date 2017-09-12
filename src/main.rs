@@ -31,7 +31,7 @@ lazy_static! {
     static ref DICTIONARY: Mutex<Vec<PprzDictionary>> = Mutex::new(vec![]);
     static ref PING_TIME: Mutex<Vec<Instant>> = Mutex::new(vec![Instant::now()]);
     static ref RE_DATALINK: Regex = Regex::new("ground_dl .*").unwrap(); // TODO: factor out?
-    static ref 
+    static ref PING_TIME_VALUE: Mutex<f32> = Mutex::new(-1.0);
 }
 
 const PERIOD_MS: u64 = 50;
@@ -92,17 +92,29 @@ fn thread_ivy_main(ivy_bus: String) -> Result<(), Box<Error>> {
 fn pong_ivy_callback(_: Vec<String>) {
     println!("Got PONG callback");
     // we just got PONG back
+    
+    let mut ping_value_s = -1.0;
+    
     // update the ping time
     let mut time_lock = PING_TIME.lock();
     if let Ok(ref mut ping_time) = time_lock {
         if !ping_time.is_empty() {
             let start_time = ping_time.pop().expect("PONG CALLBACK unwrap()");
             let duration = start_time.elapsed();
-            println!("PONG TIME: {}",
-                     duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9);
             ping_time.push(start_time);
+            
+            ping_value_s = duration.as_secs() as f32 + (duration.subsec_nanos() as f32 * 1e-9); 
         }
+    } // PING_TIME mutex unlock
+    
+    // update the value
+    let mut time_lock = PING_TIME_VALUE.lock();
+    if let Ok(ref mut ping_time) = time_lock {
+    	// update the value
+    	**ping_time = ping_value_s;
+    	println!("PONG TIME: {}",ping_value_s); 
     }
+    
 }
 
 /// Send PING message
@@ -151,37 +163,6 @@ fn thread_ping(period: u64, dictionary: Arc<PprzDictionary>) {
         thread::sleep(time::Duration::from_millis(period));
     }
 }
-
-
-/*
-let send_status_msg =
-  let start = Unix.gettimeofday () in
-  fun () ->
-    Hashtbl.iter (fun ac_id status ->
-      let dt = float !status_msg_period /. 1000. in
-      let t = int_of_float (Unix.gettimeofday () -. start) in
-      let byte_rate = float (status.rx_byte - status.last_rx_byte) /. dt
-      and msg_rate = float (status.rx_msg - status.last_rx_msg) /. dt in
-      status.last_rx_msg <- status.rx_msg;
-      status.last_rx_byte <- status.rx_byte;
-      let vs = ["ac_id", PprzLink.String (string_of_int ac_id);
-                "link_id", PprzLink.String (string_of_int !link_id);
-                "run_time", PprzLink.Int64 (Int64.of_int t);
-                "rx_lost_time", PprzLink.Int64 (Int64.of_int (status.ms_since_last_msg / 1000));
-                "rx_bytes", PprzLink.Int64 (Int64.of_int status.rx_byte);
-                "rx_msgs", PprzLink.Int64 (Int64.of_int status.rx_msg);
-                "rx_err", PprzLink.Int64 (Int64.of_int status.rx_err);
-                "rx_bytes_rate", PprzLink.Float byte_rate;
-                "rx_msgs_rate", PprzLink.Float msg_rate;
-                "tx_msgs", PprzLink.Int64 (Int64.of_int status.tx_msg);
-                "ping_time", PprzLink.Float (1000. *. (status.last_pong -. status.last_ping))
-               ] in
-      send_ground_over_ivy "link" "LINK_REPORT" vs)
-      statuss
-*/
-fn thread_status_report(period: u64, dictionary: Arc<PprzDictionary>) {}
-
-
 
 
 /// This global callback is just a cludge,
@@ -253,8 +234,16 @@ fn global_ivy_callback(mut data: Vec<String>) {
     }
 }
 
-
-
+struct RustlinkStatusReport {
+    tx_bytes: usize,
+    rx_bytes: usize,
+    rx_msgs: usize,
+    tx_msgs: usize,
+    last_tx_bytes: usize,
+    last_rx_bytes: usize,
+    last_rx_msgs: usize,
+    last_tx_msgs: usize,
+}
 
 /// Main serial thread
 ///
@@ -270,12 +259,30 @@ fn global_ivy_callback(mut data: Vec<String>) {
 /// If new message from IVY bus is to be send, it saves it to the message queue (FIFO).
 fn thread_scheduler(port_name: OsString,
                     baudrate: usize,
-                    dictionary: Arc<PprzDictionary>)
+                    dictionary: Arc<PprzDictionary>,
+                    status_report_period: u64)
                     -> Result<(), Box<Error>> {
     let port = serial::open(&port_name)?;
     let mut port = match configure_port(port, baudrate) {
         Ok(port) => port,
         Err(e) => return Err(e),
+    };
+
+    // initialize variables LINK_REPORT
+    let mut status_report_timer = Instant::now();
+    let status_report_period = Duration::from_millis(status_report_period);
+    let mut report_msg = dictionary
+        .find_msg_by_name(String::from("LINK_REPORT").as_ref())
+        .expect("LINK_REPORT message not found");
+    let mut status_report = RustlinkStatusReport {
+        tx_bytes: 0,
+        rx_bytes: 0,
+        rx_msgs: 0,
+        tx_msgs: 0,
+        last_tx_bytes: 0,
+        last_rx_bytes: 0,
+        last_rx_msgs: 0,
+        last_tx_msgs: 0,
     };
 
     // initialize an emty buffer
@@ -352,6 +359,8 @@ fn thread_scheduler(port_name: OsString,
             // Send our messages
             for msg_to_send in msg_buf {
                 let len = port.write(&msg_to_send.buf)?;
+                status_report.tx_bytes += len;
+                status_report.tx_msgs += 1;
                 if len != msg_to_send.buf.len() {
                     println!("Written {} bytes, but the message was {} bytes",
                              len,
@@ -367,10 +376,12 @@ fn thread_scheduler(port_name: OsString,
             Ok(len) => len,
             Err(_) => continue,
         };
+        status_report.rx_bytes += len;
 
         // parse received data and optionally send a message
         for idx in 0..len {
             if rx.parse_byte(buf[idx]) {
+                status_report.rx_msgs += 1;
                 let name = dictionary
                     .get_msg_name(PprzMsgClassID::Telemetry, rx.buf[1])
                     .unwrap();
@@ -385,18 +396,151 @@ fn thread_scheduler(port_name: OsString,
                     pong_ivy_callback(vec![]);
                 }
 
-                // check for DATALINK_REPORT
-
                 // send the message
                 ivyrust::ivy_send_msg(msg.to_string().unwrap());
-            }
+            } // end parse byte
+        } // end for idx in 0..len
+
+
+
+
+        // update status & send status message if needed
+        if status_report_timer.elapsed() >= status_report_period {
+            report_msg = update_status(report_msg, &mut status_report, status_report_period);
+
+            // reset the timer
+            status_report_timer = Instant::now();
         }
-    }
+
+    } // end-loop
+}
+
+/*
+let send_status_msg =
+  let start = Unix.gettimeofday () in
+  fun () ->
+    Hashtbl.iter (fun ac_id status ->
+      let dt = float !status_msg_period /. 1000. in
+      let t = int_of_float (Unix.gettimeofday () -. start) in
+      let byte_rate = float (status.rx_byte - status.last_rx_byte) /. dt
+      and msg_rate = float (status.rx_msg - status.last_rx_msg) /. dt in
+      status.last_rx_msg <- status.rx_msg;
+      status.last_rx_byte <- status.rx_byte;
+      let vs = ["ac_id", PprzLink.String (string_of_int ac_id);
+                "link_id", PprzLink.String (string_of_int !link_id);
+                "run_time", PprzLink.Int64 (Int64.of_int t);
+                "rx_lost_time", PprzLink.Int64 (Int64.of_int (status.ms_since_last_msg / 1000));
+                "rx_bytes", PprzLink.Int64 (Int64.of_int status.rx_byte);
+                "rx_msgs", PprzLink.Int64 (Int64.of_int status.rx_msg);
+                "rx_err", PprzLink.Int64 (Int64.of_int status.rx_err);
+                "rx_bytes_rate", PprzLink.Float byte_rate;
+                "rx_msgs_rate", PprzLink.Float msg_rate;
+                "tx_msgs", PprzLink.Int64 (Int64.of_int status.tx_msg);
+                "ping_time", PprzLink.Float (1000. *. (status.last_pong -. status.last_ping))
+               ] in
+      send_ground_over_ivy "link" "LINK_REPORT" vs)
+      statuss
+      
+          <message name="LINK_REPORT" id="36">
+      <description>Datalink status reported by Link for the Server</description>
+      <field name="ac_id" type="string"/>
+      <field name="link_id" type="string"/>
+      <field name="run_time" type="uint32" unit="s"/>
+      <field name="rx_lost_time" type="uint32" unit="s"/>
+      <field name="rx_bytes" type="uint32"/>
+      <field name="rx_msgs" type="uint32"/>
+      <field name="rx_err" type="uint32"/>
+      <field name="rx_bytes_rate" type="float" format="%.1f" unit="bytes/s"/>
+      <field name="rx_msgs_rate" type="float" format="%.1f" unit="msgs/s"/>
+      <field name="tx_msgs" type="uint32"/>
+      <field name="ping_time" type="float" format="%.2f" unit="ms"/>
+    </message>
+*/
+/// Update status is called every time we get new data, we just store the new values
+fn update_status(mut msg: PprzMessage,
+                 status_report: &mut RustlinkStatusReport,
+                 status_msg_period: Duration)
+                 -> PprzMessage {
+
+    let dt_seconds = status_msg_period.as_secs() as f32 +
+                     (status_msg_period.subsec_nanos() as f32 * 1e-9);
+
+    for field in &mut msg.fields {
+        match field.name.as_ref() {
+            "ac_id" => {
+                // this is AC_ID, we can leave blank for now
+                field.value = PprzMsgBaseType::String(String::from("1"));
+            }
+            "link_id" => {
+                // link ID will be -1 unless we explicitly set it
+                field.value = PprzMsgBaseType::String(String::from("-1"));
+
+            }
+            "run_time" => {
+                // increment runtime
+                if let PprzMsgBaseType::Uint32(v) = field.value {
+                    field.value = PprzMsgBaseType::Uint32((v as f32 + dt_seconds) as u32);
+                }
+            }
+            "rx_lost_time" => {
+                if status_report.rx_msgs == status_report.last_rx_msgs {
+                    // no new messages
+                    if let PprzMsgBaseType::Uint32(v) = field.value {
+                        field.value = PprzMsgBaseType::Uint32((v as f32 + dt_seconds) as u32);
+                    }
+                }
+            }
+            "rx_bytes" => {
+                field.value = PprzMsgBaseType::Uint32(status_report.rx_bytes as u32);
+            }
+            "rx_msgs" => {
+                field.value = PprzMsgBaseType::Uint32(status_report.rx_msgs as u32);
+            }
+            "rx_err" => {
+                // we dont really have a way to tell the errors, so keep as zero
+                field.value = PprzMsgBaseType::Uint32(0);
+            }
+            "rx_bytes_rate" => {
+                let byte_rate = (status_report.rx_bytes - status_report.last_rx_bytes) as f32 /
+                                dt_seconds;
+                field.value = PprzMsgBaseType::Float(byte_rate);
+            }
+            "rx_msgs_rate" => {
+                let byte_rate = (status_report.rx_msgs - status_report.last_rx_msgs) as f32 /
+                                dt_seconds;
+                field.value = PprzMsgBaseType::Float(byte_rate);
+            }
+            "tx_msgs" => {
+            	field.value = PprzMsgBaseType::Uint32(status_report.tx_msgs as u32);
+            }
+            "ping_time" => {
+            	// acquire last ping time
+            	
+            	// set to -1 if not sucessfull
+            }
+            _ => {
+                println!("update_status: Unknown field");
+            }
+        } // end match
+    } // end for
+    
+    // time is up, send the report
+    ivyrust::ivy_send_msg(msg.to_string().unwrap());
+    
+    // update the report
+    status_report.last_rx_bytes = status_report.rx_bytes;
+    status_report.last_tx_bytes = status_report.tx_bytes;
+    status_report.last_rx_msgs = status_report.rx_msgs;
+    status_report.last_tx_msgs = status_report.tx_msgs; 
+
+    msg
+
+
 }
 
 
 fn main() {
-	// Construct command line arguments
+    // Construct command line arguments
     let matches = App::new("Rustlink for Paparazzi")
         .version("0.1")
         .arg(Arg::with_name("ivy_bus")
@@ -429,23 +573,27 @@ fn main() {
         .get_matches();
 
 
-    
-    let ivy_bus = matches.value_of("ivy_bus").unwrap_or("127.255.255.255:2010");
+
+    let ivy_bus = matches
+        .value_of("ivy_bus")
+        .unwrap_or("127.255.255.255:2010");
     let ivy_bus = String::from(ivy_bus);
     println!("Value for ivy_bus: {}", ivy_bus);
-    
+
     let ping_period = matches.value_of("ping_period").unwrap_or("1000");
     let ping_period = ping_period.parse::<u64>().expect("Incorrect ping period");
     println!("Value for ping_period: {}", ping_period);
-    
+
     let status_period = matches.value_of("status_period").unwrap_or("5000");
-    let status_period = status_period.parse::<u64>().expect("Incorrect status period");
+    let status_period = status_period
+        .parse::<u64>()
+        .expect("Incorrect status period");
     println!("Value for status_period: {}", status_period);
-    
+
     let baudrate = matches.value_of("baudrate").unwrap_or("9600");
-    let baudrate =  baudrate.parse::<usize>().expect("Incorrect baudrate");
+    let baudrate = baudrate.parse::<usize>().expect("Incorrect baudrate");
     println!("Value for baudrate: {}", baudrate);
-    
+
     let port = matches.value_of("port").unwrap_or("/dev/ttyUSB0");
     let port = OsString::from(port);
     println!("Value for port: {:?}", port);
@@ -472,7 +620,6 @@ fn main() {
     let dictionary = Arc::new(dictionary);
     let dictionary_scheduler = Arc::clone(&dictionary);
     let dictionary_ping = Arc::clone(&dictionary);
-    let dictionary_status = Arc::clone(&dictionary);
 
     // spin the main IVY loop
     let _ = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
@@ -484,7 +631,8 @@ fn main() {
     // spin the serial loop
     let t2 = thread::spawn(move || if let Err(e) = thread_scheduler(port,
                                                                     baudrate,
-                                                                    dictionary_scheduler) {
+                                                                    dictionary_scheduler,
+                                                                    status_period) {
                                println!("Error starting serial thread: {}", e);
                            } else {
                                println!("Serial thread finished");
@@ -494,9 +642,6 @@ fn main() {
 
     // ping periodic
     let _ = thread::spawn(move || thread_ping(ping_period, dictionary_ping));
-
-    // status report periodic
-    let _ = thread::spawn(move || thread_status_report(status_period, dictionary_status));
 
     // bind global callback
     let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
