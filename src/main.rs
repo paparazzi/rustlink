@@ -29,7 +29,7 @@ use std::collections::VecDeque;
 lazy_static! {
     static ref MSG_QUEUE: Mutex<VecDeque<PprzMessage>> = Mutex::new(VecDeque::new());
     static ref DICTIONARY: Mutex<Vec<PprzDictionary>> = Mutex::new(vec![]);
-    static ref PING_TIME: Mutex<Vec<Instant>> = Mutex::new(vec![Instant::now()]);
+    static ref PING_TIME: Mutex<Instant> = Mutex::new(Instant::now());
     static ref RE_DATALINK: Regex = Regex::new("ground_dl .*").unwrap(); // TODO: factor out?
     static ref PING_TIME_VALUE: Mutex<f32> = Mutex::new(-1.0);
 }
@@ -92,29 +92,26 @@ fn thread_ivy_main(ivy_bus: String) -> Result<(), Box<Error>> {
 fn pong_ivy_callback(_: Vec<String>) {
     println!("Got PONG callback");
     // we just got PONG back
-    
+
     let mut ping_value_s = -1.0;
-    
+
     // update the ping time
     let mut time_lock = PING_TIME.lock();
     if let Ok(ref mut ping_time) = time_lock {
-        if !ping_time.is_empty() {
-            let start_time = ping_time.pop().expect("PONG CALLBACK unwrap()");
-            let duration = start_time.elapsed();
-            ping_time.push(start_time);
-            
-            ping_value_s = duration.as_secs() as f32 + (duration.subsec_nanos() as f32 * 1e-9); 
-        }
+        let start_time = **ping_time;
+        let duration = start_time.elapsed();
+        **ping_time = start_time;
+
+        ping_value_s = duration.as_secs() as f32 + (duration.subsec_nanos() as f32 * 1e-9);
     } // PING_TIME mutex unlock
-    
+
     // update the value
     let mut time_lock = PING_TIME_VALUE.lock();
     if let Ok(ref mut ping_time) = time_lock {
-    	// update the value
-    	**ping_time = ping_value_s;
-    	println!("PONG TIME: {}",ping_value_s); 
+        // update the value
+        **ping_time = ping_value_s;
+        println!("PONG TIME: {}", ping_value_s);
     }
-    
 }
 
 /// Send PING message
@@ -151,14 +148,12 @@ fn thread_ping(period: u64, dictionary: Arc<PprzDictionary>) {
                 // update the ping time
                 let mut time_lock = PING_TIME.lock();
                 if let Ok(ref mut ping_time) = time_lock {
-                    ping_time.pop().expect("PING_TIME is empty");
                     let start_time = Instant::now();
-                    ping_time.push(start_time);
+                    **ping_time = start_time;
                     println!("Updating PING TIME");
                 }
             }
         }
-
 
         thread::sleep(time::Duration::from_millis(period));
     }
@@ -230,7 +225,6 @@ fn global_ivy_callback(mut data: Vec<String>) {
             // push the dictionary back (sight)
             dictionary_vector.push(dictionary);
         }
-
     }
 }
 
@@ -381,6 +375,8 @@ fn thread_scheduler(port_name: OsString,
         // parse received data and optionally send a message
         for idx in 0..len {
             if rx.parse_byte(buf[idx]) {
+                // TODO: here would we handle encryption
+
                 status_report.rx_msgs += 1;
                 let name = dictionary
                     .get_msg_name(PprzMsgClassID::Telemetry, rx.buf[1])
@@ -400,8 +396,6 @@ fn thread_scheduler(port_name: OsString,
                 ivyrust::ivy_send_msg(msg.to_string().unwrap());
             } // end parse byte
         } // end for idx in 0..len
-
-
 
 
         // update status & send status message if needed
@@ -511,31 +505,34 @@ fn update_status(mut msg: PprzMessage,
                 field.value = PprzMsgBaseType::Float(byte_rate);
             }
             "tx_msgs" => {
-            	field.value = PprzMsgBaseType::Uint32(status_report.tx_msgs as u32);
+                field.value = PprzMsgBaseType::Uint32(status_report.tx_msgs as u32);
             }
             "ping_time" => {
-            	// acquire last ping time
-            	
-            	// set to -1 if not sucessfull
+                let mut ping = -1.0;
+
+                // acquire last ping time
+                let mut time_lock = PING_TIME_VALUE.lock();
+                if let Ok(ref mut ping_time) = time_lock {
+                    ping = **ping_time;
+                }
+                field.value = PprzMsgBaseType::Float(ping);
             }
             _ => {
                 println!("update_status: Unknown field");
             }
         } // end match
     } // end for
-    
+
     // time is up, send the report
     ivyrust::ivy_send_msg(msg.to_string().unwrap());
-    
+
     // update the report
     status_report.last_rx_bytes = status_report.rx_bytes;
     status_report.last_tx_bytes = status_report.tx_bytes;
     status_report.last_rx_msgs = status_report.rx_msgs;
-    status_report.last_tx_msgs = status_report.tx_msgs; 
+    status_report.last_tx_msgs = status_report.tx_msgs;
 
     msg
-
-
 }
 
 
@@ -570,6 +567,10 @@ fn main() {
                  .value_name("ping_period")
                  .help("Sets the period (in ms) of the PING message sent to aircrafs. Default is 5000")
                  .takes_value(true))
+        .arg(Arg::with_name("sender")
+                 .long("sender")
+                 .help("Use Rustlink to simulate the autopilot")
+                 .takes_value(false))
         .get_matches();
 
 
@@ -598,6 +599,11 @@ fn main() {
     let port = OsString::from(port);
     println!("Value for port: {:?}", port);
 
+    let as_sender = match matches.occurrences_of("sender") {
+        0 => false,
+        _ => true,
+    };
+
     let pprz_root = match env::var("PAPARAZZI_SRC") {
         Ok(var) => var,
         Err(e) => {
@@ -606,7 +612,14 @@ fn main() {
         }
     };
 
+    // spin the main IVY loop
+    let _ = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
+                              println!("Error starting ivy thread: {}", e);
+                          } else {
+                              println!("Ivy thread finished");
+                          });
 
+    // prepare the dictionary
     let xml_file = pprz_root + "/sw/ext/pprzlink/message_definitions/v1.0/messages.xml";
     let file = File::open(xml_file.clone()).unwrap();
     let dictionary = parser::build_dictionary(file);
@@ -621,34 +634,295 @@ fn main() {
     let dictionary_scheduler = Arc::clone(&dictionary);
     let dictionary_ping = Arc::clone(&dictionary);
 
-    // spin the main IVY loop
-    let _ = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
-                              println!("Error starting ivy thread: {}", e);
-                          } else {
-                              println!("Ivy thread finished");
-                          });
+    if !as_sender {
+        // spin the serial loop
+        let t = thread::spawn(move || if let Err(e) = thread_scheduler(port,
+                                                                       baudrate,
+                                                                       dictionary_scheduler,
+                                                                       status_period) {
+                                  println!("Error starting serial thread: {}", e);
+                              } else {
+                                  println!("Serial thread finished");
+                              });
 
-    // spin the serial loop
-    let t2 = thread::spawn(move || if let Err(e) = thread_scheduler(port,
+
+
+        // ping periodic
+        let _ = thread::spawn(move || thread_ping(ping_period, dictionary_ping));
+
+        // bind global callback
+        let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
+
+        // close
+        t.join().expect("Error waiting for serial thread to finish");
+
+    } else {
+        // spin the receiving thread
+        // spin the serial loop
+        let t = thread::spawn(move || if let Err(e) = thread_sender(port,
                                                                     baudrate,
-                                                                    dictionary_scheduler,
-                                                                    status_period) {
-                               println!("Error starting serial thread: {}", e);
-                           } else {
-                               println!("Serial thread finished");
-                           });
+                                                                    dictionary_scheduler) {
+                                  println!("Error starting serial thread: {}", e);
+                              } else {
+                                  println!("Serial thread finished");
+                              });
 
+        let _ = thread::spawn(|| thread_message_generator(1.0, dictionary_ping));
 
+        t.join().expect("Error waiting for sender thread to finish");
 
-    // ping periodic
-    let _ = thread::spawn(move || thread_ping(ping_period, dictionary_ping));
+    }
 
-    // bind global callback
-    let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
-
-    // close
-    t2.join()
-        .expect("Error waiting for serial thread to finish");
+    // end program
     ivyrust::ivy_stop();
-
 }
+
+
+/// This thread randomly generates messages
+///
+/// We only specify how long our vector of random messages at random intervals should be
+/*
+      <message name="AUTOPILOT_VERSION"   period="11.1"/>
+      <message name="ALIVE"               period="5.1"/>
+      <message name="GPS_LLA"             period="0.25"/>
+      <message name="NAVIGATION"          period="1."/>
+      <message name="ATTITUDE"            period="0.1"/>
+      <message name="ESTIMATOR"           period="0.5"/>
+      <message name="WP_MOVED"            period="0.5"/>
+      <message name="CIRCLE"              period="1.05"/>
+      <message name="DESIRED"             period="0.2"/>
+      <message name="BAT"                 period="1.1"/>
+      <message name="SEGMENT"             period="1.2"/>
+      <message name="NAVIGATION_REF"      period="9."/>
+      <message name="PPRZ_MODE"           period="4.9"/>
+      <message name="SETTINGS"            period="5."/>
+      <message name="DATALINK_REPORT"     period="5.1"/>
+      <message name="DL_VALUE"            period="1.5"/>
+      <message name="IR_SENSORS"          period="1.2"/>
+      <message name="SURVEY"              period="2.1"/>
+      <message name="COMMANDS"            period="1"/>
+      <message name="FBW_STATUS"          period="2"/>
+      <message name="VECTORNAV_INFO"      period="1.0"/>
+      <message name="COMMANDS"            period="5"/>
+      <message name="FBW_STATUS"          period="2"/>
+      <message name="ACTUATORS"           period="5"/> <!-- For trimming -->
+*/
+/// Scale divides the period, so higher the scale, the faster the messages
+fn thread_message_generator(scale: f32, dictionary: Arc<PprzDictionary>) {
+    let mut periods = vec![11.1, 5.1, 0.25, 1.0, 0.1, 0.5, 0.5, 1.05, 0.2, 1.1, 1.2, 9.0, 4.9,
+                           5.0, 5.1, 1.5, 1.2, 2.1, 1.0, 2.0, 1.0, 5.0, 2.0, 5.0];
+    let msg_names = vec!["AUTOPILOT_VERSION",
+                         "ALIVE",
+                         "GPS_LLA",
+                         "NAVIGATION",
+                         "ATTITUDE",
+                         "ESTIMATOR",
+                         "WP_MOVED",
+                         "CIRCLE",
+                         "DESIRED",
+                         "BAT",
+                         "SEGMENT",
+                         "NAVIGATION_REF",
+                         "PPRZ_MODE",
+                         "SETTINGS",
+                         "DATALINK_REPORT",
+                         "DL_VALUE",
+                         "IR_SENSORS",
+                         "SURVEY",
+                         "COMMANDS",
+                         "FBW_STATUS",
+                         "VECTORNAV_INFO",
+                         "COMMANDS",
+                         "FBW_STATUS",
+                         "ACTUATORS"];
+
+    // init messages
+    let mut msgs: Vec<PprzMessage> = vec![];
+    for name in msg_names {
+        let mut msg = dictionary.find_msg_by_name(name).unwrap();
+        msg.source = 1;
+        msgs.push(msg);
+    }
+
+    let mut handles = vec![];
+
+    while !msgs.is_empty() {
+        let msg = msgs.pop().unwrap();
+        let period = ((periods.pop().unwrap() * 1000.0) / scale) as u64;
+
+        let handle = thread::spawn(move || {
+            // if found, update the global msg
+            let mut msg_lock = MSG_QUEUE.lock();
+            if let Ok(ref mut msg_vector) = msg_lock {
+                println!("Sending MSG {}", msg.name);
+                // append at the end of vector
+                msg_vector.push_back(msg);
+            }
+            thread::sleep(time::Duration::from_millis(period));
+        });
+        handles.push(handle);
+    }
+
+
+
+    for handle in handles {
+        handle.join().unwrap();
+    }
+}
+
+/// We need a state macgine
+enum RustlinkAutopiloStatus {
+    WaitingForSyncChannel,
+    WaitingForProtectionInterval,
+    Transmitting,
+}
+
+
+/// This thread simulates being an autopilot
+///
+/// Waits for the SYNC/CHANNEL message, and once received, it sends appropriate data on the ground
+/// The messages are randomly generated for now, we just have to handle the AC_ID (in this case hardcoded to 1)
+///
+fn thread_sender(port_name: OsString,
+                 baudrate: usize,
+                 dictionary: Arc<PprzDictionary>)
+                 -> Result<(), Box<Error>> {
+    let port = serial::open(&port_name)?;
+    let mut port = match configure_port(port, baudrate) {
+        Ok(port) => port,
+        Err(e) => return Err(e),
+    };
+
+    // initialize an emty buffer
+    let mut buf = [0; 255]; // still have to manually allocate an array
+    let mut rx = PprzTransport::new();
+
+	// Scheduling variables
+    let mut ap_status = RustlinkAutopiloStatus::WaitingForSyncChannel;
+    let mut delay = 0;
+    let mut rx_delay = Instant::now();
+    let mut t_2 = Instant::now();
+
+
+
+    // proceed to read messages
+    loop {
+        // we got SYNC/CHANNEL value & the protection interval ended
+        if delay != 0 {
+        	// TX variables
+		    let mut len = 0;
+		    let mut msg_buf: Vec<PprzTransport> = vec![];
+
+            // we got delay, lets match the cases
+            match ap_status {
+                RustlinkAutopiloStatus::WaitingForSyncChannel => {
+                    // do nothing
+                }
+                RustlinkAutopiloStatus::WaitingForProtectionInterval => {
+                    // check if the inerval passed
+                    if rx_delay.elapsed() >= Duration::from_millis(PROTECTION_PERIOD) {
+                        // start transmitting
+                        ap_status = RustlinkAutopiloStatus::Transmitting;
+                        // star counting time
+                        t_2 = Instant::now();
+                        
+                        println!("Protection interval ended!");
+                    }
+                }
+                RustlinkAutopiloStatus::Transmitting => {
+                    // transmit data
+                    if t_2.elapsed() > Duration::from_millis(delay) {
+                        // reset the counter
+                        delay = 0;
+                        ap_status = RustlinkAutopiloStatus::WaitingForSyncChannel;
+                        println!("Transmitting interval ended");
+                    } else {
+                        // send data
+                        // look at how many messages are in the queue
+
+                        // calculate max message size we are allowed to send
+                        // TODO: update delay in case we don't have mutex right away
+                        let max_len = (delay as f32 / MS_PER_BYTE) as u8;
+                        println!("We have windown of {} bytes to send", max_len);
+
+                        // try lock and don't wait
+                        let mut lock = MSG_QUEUE.try_lock();
+                        if let Ok(ref mut msg_queue) = lock {
+                            while !msg_queue.is_empty() && (len <= max_len) {
+                                // get a message from the front of the queue
+                                let new_msg = msg_queue.pop_front().unwrap();
+
+                                // get a transort
+                                let mut tx = PprzTransport::new();
+
+                                // construct a message from the transport
+                                tx.construct_pprz_msg(&new_msg.to_bytes());
+
+                                // validate message length
+                                if (len + tx.get_message_length() as u8) <= max_len {
+                                    // increment lenght
+                                    len += tx.get_message_length() as u8;
+                                    // we have room for the message, so push it in
+                                    msg_buf.push(tx);
+                                } else {
+                                    // we should abort counting here
+                                    println!("too many messages, breaking from len={}", len);
+                                    break;
+                                }
+                                println!("Scheduler: Message queue len: {}", msg_queue.len());
+                            } // end while lock on msg_queue
+                        } // end mutex lock
+                    } // end else
+                } // end Transmitting status
+            } // end match status
+
+
+            // Send our messages
+            for msg_to_send in msg_buf {
+                let len = port.write(&msg_to_send.buf)?;
+                if len != msg_to_send.buf.len() {
+                    println!("Written {} bytes, but the message was {} bytes",
+                             len,
+                             msg_to_send.buf.len());
+                }
+            } // end sending messages
+        } // end delay != 0
+
+        // read data (no timeout right now)
+        let len = match port.read(&mut buf[..]) {
+            Ok(len) => len,
+            Err(_) => continue,
+        };
+
+
+        // parse received data, we are waiting for CHANNEL message
+        for idx in 0..len {
+            if rx.parse_byte(buf[idx]) {
+                // update the protection interval
+                rx_delay = Instant::now();
+
+                let name = dictionary
+                    .get_msg_name(PprzMsgClassID::Datalink, rx.buf[1])
+                    .unwrap();
+                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
+
+                // update message fields with real values
+                msg.update(&rx.buf);
+
+                // check for CHANNEL
+                if msg.name == "CHANNEL" {
+                    println!("Got CHANNEL");
+
+                    // upodate the delay
+                    if let PprzMsgBaseType::Uint8(v) = msg.fields[0].value {
+                        let delay = v;
+                        println!("Updating delay to {} ms", delay);
+                    }
+
+                    // now we can move on an wait for the protection interval to end
+                    ap_status = RustlinkAutopiloStatus::WaitingForProtectionInterval
+                } // end channel
+            } // end parse byte
+        } // end for idx in 0..len
+    } // end-loop
+} // end thread_sender

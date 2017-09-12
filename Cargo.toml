@@ -4,8 +4,9 @@ version = "0.1.0"
 authors = ["Michal Podhradsky <michal.podhradsky@galois.com>"]
 
 [dependencies]
-pprzlink = {path="xxx/pprzlink_rust"}
+pprzlink = "0.3.0"
 ivyrust = "0.1.1"
 serial="0.4"
 regex = "0.2"
 lazy_static = "0.2"
+clap = "2.26.0"
