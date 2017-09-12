@@ -5,9 +5,9 @@ extern crate regex;
 extern crate serial;
 extern crate ivyrust;
 extern crate pprzlink;
-extern crate argparse;
+extern crate clap;
 
-use argparse::{ArgumentParser, StoreTrue, Store};
+use clap::{Arg, App};
 use std::env;
 use ivyrust::*;
 use std::{thread, time};
@@ -31,6 +31,7 @@ lazy_static! {
     static ref DICTIONARY: Mutex<Vec<PprzDictionary>> = Mutex::new(vec![]);
     static ref PING_TIME: Mutex<Vec<Instant>> = Mutex::new(vec![Instant::now()]);
     static ref RE_DATALINK: Regex = Regex::new("ground_dl .*").unwrap(); // TODO: factor out?
+    static ref 
 }
 
 const PERIOD_MS: u64 = 50;
@@ -42,22 +43,6 @@ const MAX_MSG_SIZE: usize = 256;
 /// Max number of bytes we can send before we can forfeit two way communication
 /// Includes the size of SYNC/CHANNEL message (7 bytes)
 const MSG_ONE_WAY_THRESHOLD: usize = 223;
-
-
-#[derive(Debug)]
-struct Args {
-    flag_h: bool,
-    flag_help: bool,
-    flag_b: bool,
-    flag_d: bool,
-    arg_ivy_bus: String,
-    arg_port: String,
-    arg_baudrate: Option<i32>,
-    flag_ping: bool,
-    flag_datalink: bool,
-    arg_ping_period_ms: Option<u64>,
-    arg_datalink_period_ms: Option<u64>,
-}
 
 
 /// Configure port to given settings
@@ -167,7 +152,34 @@ fn thread_ping(period: u64, dictionary: Arc<PprzDictionary>) {
     }
 }
 
-fn thread_status_report(period: i32) {}
+
+/*
+let send_status_msg =
+  let start = Unix.gettimeofday () in
+  fun () ->
+    Hashtbl.iter (fun ac_id status ->
+      let dt = float !status_msg_period /. 1000. in
+      let t = int_of_float (Unix.gettimeofday () -. start) in
+      let byte_rate = float (status.rx_byte - status.last_rx_byte) /. dt
+      and msg_rate = float (status.rx_msg - status.last_rx_msg) /. dt in
+      status.last_rx_msg <- status.rx_msg;
+      status.last_rx_byte <- status.rx_byte;
+      let vs = ["ac_id", PprzLink.String (string_of_int ac_id);
+                "link_id", PprzLink.String (string_of_int !link_id);
+                "run_time", PprzLink.Int64 (Int64.of_int t);
+                "rx_lost_time", PprzLink.Int64 (Int64.of_int (status.ms_since_last_msg / 1000));
+                "rx_bytes", PprzLink.Int64 (Int64.of_int status.rx_byte);
+                "rx_msgs", PprzLink.Int64 (Int64.of_int status.rx_msg);
+                "rx_err", PprzLink.Int64 (Int64.of_int status.rx_err);
+                "rx_bytes_rate", PprzLink.Float byte_rate;
+                "rx_msgs_rate", PprzLink.Float msg_rate;
+                "tx_msgs", PprzLink.Int64 (Int64.of_int status.tx_msg);
+                "ping_time", PprzLink.Float (1000. *. (status.last_pong -. status.last_ping))
+               ] in
+      send_ground_over_ivy "link" "LINK_REPORT" vs)
+      statuss
+*/
+fn thread_status_report(period: u64, dictionary: Arc<PprzDictionary>) {}
 
 
 
@@ -382,33 +394,61 @@ fn thread_scheduler(port_name: OsString,
     }
 }
 
-/*
-Usage: 
-  -b <ivy bus> Default is 127.255.255.255:2010
-  -d <port> Default is /dev/ttyUSB0
-  -s <baudrate>  Default is 9600
-  -id <id> Sets the link id. If multiple links are used, each must have a unique id. Default is -1
-  -status_period <period> Sets the period (in ms) of the LINK_REPORT status message. Default is 1000
-  -ping_period <period> Sets the period (in ms) of the PING message sent to aircrafs. Default is 5000
-  -help  Display this list of options
-  --help  Display this list of options
-*/
+
 fn main() {
-    let mut args = Args {
-        flag_h: false,
-        flag_help: false,
-        flag_b: false,
-        flag_d: false,
-        arg_ivy_bus: String::new(),
-        arg_port: String::from("/dev/ttyUSB0"),
-        arg_baudrate: Some(57_600),
-        flag_ping: false,
-        flag_datalink: false,
-        arg_ping_period_ms: Some(1000 as u64),
-        arg_datalink_period_ms: Some(1000 as u64),
-    };
+	// Construct command line arguments
+    let matches = App::new("Rustlink for Paparazzi")
+        .version("0.1")
+        .arg(Arg::with_name("ivy_bus")
+                 .short("b")
+                 .value_name("ivy_bus")
+                 .help("Default is 127.255.255.255:2010")
+                 .takes_value(true))
+        .arg(Arg::with_name("port")
+                 .short("d")
+                 .value_name("port")
+                 .help("Default is /dev/ttyUSB0")
+                 .takes_value(true))
+        .arg(Arg::with_name("baudrate")
+                 .short("s")
+                 .value_name("baudrate")
+                 .help("Default is 9600")
+                 .takes_value(true))
+        .arg(Arg::with_name("status_period")
+                 .short("t")
+                 .long("status_period")
+                 .value_name("status_period")
+                 .help("Sets the period (in ms) of the LINK_REPORT status message. Default is 1000")
+                 .takes_value(true))
+        .arg(Arg::with_name("ping_period")
+                 .short("n")
+                 .long("ping_period")
+                 .value_name("ping_period")
+                 .help("Sets the period (in ms) of the PING message sent to aircrafs. Default is 5000")
+                 .takes_value(true))
+        .get_matches();
+
+
     
-    println!("args: {:?}",args);
+    let ivy_bus = matches.value_of("ivy_bus").unwrap_or("127.255.255.255:2010");
+    let ivy_bus = String::from(ivy_bus);
+    println!("Value for ivy_bus: {}", ivy_bus);
+    
+    let ping_period = matches.value_of("ping_period").unwrap_or("1000");
+    let ping_period = ping_period.parse::<u64>().expect("Incorrect ping period");
+    println!("Value for ping_period: {}", ping_period);
+    
+    let status_period = matches.value_of("status_period").unwrap_or("5000");
+    let status_period = status_period.parse::<u64>().expect("Incorrect status period");
+    println!("Value for status_period: {}", status_period);
+    
+    let baudrate = matches.value_of("baudrate").unwrap_or("9600");
+    let baudrate =  baudrate.parse::<usize>().expect("Incorrect baudrate");
+    println!("Value for baudrate: {}", baudrate);
+    
+    let port = matches.value_of("port").unwrap_or("/dev/ttyUSB0");
+    let port = OsString::from(port);
+    println!("Value for port: {:?}", port);
 
     let pprz_root = match env::var("PAPARAZZI_SRC") {
         Ok(var) => var,
@@ -418,7 +458,6 @@ fn main() {
         }
     };
 
-    // HACK: rather than implementing Clone for the dictionary, we just build another dictionary
 
     let xml_file = pprz_root + "/sw/ext/pprzlink/message_definitions/v1.0/messages.xml";
     let file = File::open(xml_file.clone()).unwrap();
@@ -435,9 +474,7 @@ fn main() {
     let dictionary_ping = Arc::clone(&dictionary);
     let dictionary_status = Arc::clone(&dictionary);
 
-    // spin the main loop
-    let ivy_bus = args.arg_ivy_bus;
-    let ping_period = args.arg_ping_period_ms;
+    // spin the main IVY loop
     let _ = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
                               println!("Error starting ivy thread: {}", e);
                           } else {
@@ -445,8 +482,6 @@ fn main() {
                           });
 
     // spin the serial loop
-    let port = OsString::from(args.arg_port);
-    let baudrate = args.arg_baudrate.unwrap() as usize;
     let t2 = thread::spawn(move || if let Err(e) = thread_scheduler(port,
                                                                     baudrate,
                                                                     dictionary_scheduler) {
@@ -456,7 +491,14 @@ fn main() {
                            });
 
 
-    let _ = thread::spawn(move || thread_ping(ping_period.unwrap(), dictionary_ping));
+
+    // ping periodic
+    let _ = thread::spawn(move || thread_ping(ping_period, dictionary_ping));
+
+    // status report periodic
+    let _ = thread::spawn(move || thread_status_report(status_period, dictionary_status));
+
+    // bind global callback
     let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
 
     // close
