@@ -523,6 +523,8 @@ fn update_status(mut msg: PprzMessage,
         } // end match
     } // end for
 
+	println!("Status message: {}", msg);
+
     // time is up, send the report
     ivyrust::ivy_send_msg(msg.to_string().unwrap());
 
@@ -923,7 +925,7 @@ fn thread_sender(port_name: OsString,
                     ap_status = RustlinkAutopiloStatus::WaitingForProtectionInterval
                 } // end channel
 
-                if msg.name = "PING" {
+                if msg.name == "PING" {
                     // send PONG as the first thing
                     let mut msg = dictionary.find_msg_by_name("PONG").expect("PONG not found");
                     msg.source = 1;
