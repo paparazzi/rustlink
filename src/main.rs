@@ -682,7 +682,7 @@ fn main() {
                                   println!("Serial thread finished");
                               });
 
-        let _ = thread::spawn(|| thread_message_generator(1.0, dictionary_ping));
+        let _ = thread::spawn(|| thread_message_generator(15.0, dictionary_ping));
 
         t.join().expect("Error waiting for sender thread to finish");
 
