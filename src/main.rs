@@ -301,7 +301,10 @@ fn thread_scheduler(port_name: OsString,
 
     // proceed to read messages
     loop {
-        if instant.elapsed() >= Duration::from_millis(PERIOD_MS) {
+    	let this_instant = instant.elapsed(); 
+        if this_instant >= Duration::from_millis(PERIOD_MS) {
+        	println!("{} Time to send new SYNC/CHANNEL, instant.elapsed={}", debug_time.elapsed(), this_instant.as_secs() as f64 + this_instant.subsec_nanos() as f64 * 1e-9);
+        	
             // update time
             instant = Instant::now();
 
@@ -315,8 +318,9 @@ fn thread_scheduler(port_name: OsString,
             let mut msg_buf: Vec<PprzTransport> = vec![];
 
             // try lock and don't wait
-            let mut lock = MSG_QUEUE.try_lock();
+            let mut lock = MSG_QUEUE.lock();
             if let Ok(ref mut msg_queue) = lock {
+            	println!("{} MSG_queue locked", debug_time.elapsed());
                 while !msg_queue.is_empty() && (len <= MAX_MSG_SIZE) {
                     // get a message from the front of the queue
                     let new_msg = msg_queue.pop_front().unwrap();
@@ -359,12 +363,13 @@ fn thread_scheduler(port_name: OsString,
             // Send CHANNEL message
             let mut tx = PprzTransport::new();
             tx.construct_pprz_msg(&sync_msg.to_bytes());
-            let _ = port.write(&tx.buf)?;
-            println!("{} Send SYNC/CHANNEL message, {} bytes", debug_time.elapsed(), len);
+            let len = port.write(&tx.buf)?;
+            println!("{} Add SYNC/CHANNEL message, {} bytes", debug_time.elapsed(), len);
 
             // Send our messages
             for msg_to_send in msg_buf {
                 let len = port.write(&msg_to_send.buf)?;
+                println!("{} Sent {} bytes", debug_time.elapsed(), len);
                 status_report.tx_bytes += len;
                 status_report.tx_msgs += 1;
                 if len != msg_to_send.buf.len() {
@@ -372,10 +377,9 @@ fn thread_scheduler(port_name: OsString,
                              len,
                              msg_to_send.buf.len());
                 }
-
             }
 
-        }
+        } // end if instant.elapsed() >= Duration::from_millis(PERIOD_MS) { 
 
         // read data (no timeout right now)
         let len = match port.read(&mut buf[..]) {
@@ -917,6 +921,7 @@ fn thread_sender(port_name: OsString,
         // parse received data, we are waiting for CHANNEL message
         for idx in 0..len {
             if rx.parse_byte(buf[idx]) {
+            	println!("{} Got new message", debug_time.elapsed());
                 // update the protection interval
                 rx_delay = Instant::now();
 
@@ -930,7 +935,7 @@ fn thread_sender(port_name: OsString,
 
                 // check for CHANNEL
                 if msg.name == "CHANNEL" {
-                    println!("Got CHANNEL");
+                    println!("{} Got CHANNEL", debug_time.elapsed());
 
                     // upodate the delay
                     if let PprzMsgBaseType::Uint8(v) = msg.fields[0].value {
