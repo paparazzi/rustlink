@@ -132,7 +132,6 @@ fn thread_ping(period: u64, dictionary: Arc<PprzDictionary>) {
         .find_msg_by_name(String::from("PING").as_ref())
         .expect("Ping message not found");
     loop {
-
         // the sender ID is set to zero by default
 
         // add at the beginning of the message gueue
@@ -239,6 +238,17 @@ struct RustlinkStatusReport {
     last_tx_msgs: usize,
 }
 
+struct RustlinkTime {
+	time: Instant,
+}
+
+impl RustlinkTime {
+	fn elapsed(&self) -> f64 {
+		let duration = self.time.elapsed();
+		duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9
+	}
+}
+
 /// Main serial thread
 ///
 /// Manages reading/writing to/from the serial port `port_name`
@@ -285,6 +295,9 @@ fn thread_scheduler(port_name: OsString,
 
     // get current time
     let mut instant = Instant::now();
+    
+    // get debug time
+    let debug_time = RustlinkTime{time: Instant::now()};
 
     // proceed to read messages
     loop {
@@ -322,10 +335,10 @@ fn thread_scheduler(port_name: OsString,
                         msg_buf.push(tx);
                     } else {
                         // we should abort counting here
-                        println!("too many messages, breaking from len={}", len);
+                        println!("{} too many messages, breaking from len={}", debug_time.elapsed(),len);
                         break;
                     }
-                    println!("Scheduler: Message queue len: {}", msg_queue.len());
+                    println!("{} Scheduler: Message queue len: {}", debug_time.elapsed(), msg_queue.len());
                 }
             }
 
@@ -339,7 +352,6 @@ fn thread_scheduler(port_name: OsString,
                 // double protection period (tx/rx)
                 delay = delay - PROTECTION_PERIOD as f32 * 2.0;
             }
-            //println!("delay ={}, rounded to {}", delay, delay as u8);
 
             // Set delay value
             sync_msg.fields[0].value = PprzMsgBaseType::Uint8(delay as u8);
@@ -348,7 +360,7 @@ fn thread_scheduler(port_name: OsString,
             let mut tx = PprzTransport::new();
             tx.construct_pprz_msg(&sync_msg.to_bytes());
             let _ = port.write(&tx.buf)?;
-            //println!("Written {} bytes", len);
+            println!("{} Send SYNC/CHANNEL message, {} bytes", debug_time.elapsed(), len);
 
             // Send our messages
             for msg_to_send in msg_buf {
@@ -356,7 +368,7 @@ fn thread_scheduler(port_name: OsString,
                 status_report.tx_bytes += len;
                 status_report.tx_msgs += 1;
                 if len != msg_to_send.buf.len() {
-                    println!("Written {} bytes, but the message was {} bytes",
+                    println!("{} Written {} bytes, but the message was {} bytes", debug_time.elapsed(),
                              len,
                              msg_to_send.buf.len());
                 }
@@ -376,6 +388,7 @@ fn thread_scheduler(port_name: OsString,
         for idx in 0..len {
             if rx.parse_byte(buf[idx]) {
                 // TODO: here would we handle encryption
+                // handle_crypto();
 
                 status_report.rx_msgs += 1;
                 let name = dictionary
@@ -757,7 +770,7 @@ fn thread_message_generator(scale: f32, dictionary: Arc<PprzDictionary>) {
             {
                 let mut msg_lock = MSG_QUEUE.lock();
                 if let Ok(ref mut msg_vector) = msg_lock {
-                    println!("Sending MSG {}", msg.name);
+                    println!("Adding to the queue MSG {}", msg.name);
                     // append at the end of vector
                     msg_vector.push_back(msg);
                 }
@@ -807,6 +820,8 @@ fn thread_sender(port_name: OsString,
     let mut rx_delay = Instant::now();
     let mut t_2 = Instant::now();
 
+	// get debug time
+    let debug_time = RustlinkTime{time: Instant::now()};
 
 
     // proceed to read messages
@@ -830,7 +845,7 @@ fn thread_sender(port_name: OsString,
                         // star counting time
                         t_2 = Instant::now();
 
-                        println!("Protection interval ended!");
+                        println!("{} Protection interval ended!", debug_time.elapsed());
                     }
                 }
                 RustlinkAutopiloStatus::Transmitting => {
@@ -839,7 +854,7 @@ fn thread_sender(port_name: OsString,
                         // reset the counter
                         delay = 0;
                         ap_status = RustlinkAutopiloStatus::WaitingForSyncChannel;
-                        println!("Transmitting interval ended");
+                        println!("{} Transmitting interval ended", debug_time.elapsed());
                     } else {
                         // send data
                         // look at how many messages are in the queue
@@ -847,7 +862,7 @@ fn thread_sender(port_name: OsString,
                         // calculate max message size we are allowed to send
                         // TODO: update delay in case we don't have mutex right away
                         let max_len = (delay as f32 / MS_PER_BYTE) as u8;
-                        println!("We have windown of {} bytes to send", max_len);
+                        println!("{} We have windown of {} bytes to send", debug_time.elapsed(), max_len);
 
                         // try lock and don't wait
                         let mut lock = MSG_QUEUE.lock();
@@ -870,10 +885,10 @@ fn thread_sender(port_name: OsString,
                                     msg_buf.push(tx);
                                 } else {
                                     // we should abort counting here
-                                    println!("too many messages, breaking from len={}", len);
+                                    println!("{} too many messages, breaking from len={}", debug_time.elapsed(), len);
                                     break;
                                 }
-                                println!("Scheduler: Message queue len: {}", msg_queue.len());
+                                println!("{} Scheduler: Message queue len: {}", debug_time.elapsed(), msg_queue.len());
                             } // end while lock on msg_queue
                         } // end mutex lock
                     } // end else
@@ -885,7 +900,7 @@ fn thread_sender(port_name: OsString,
             for msg_to_send in msg_buf {
                 let len = port.write(&msg_to_send.buf)?;
                 if len != msg_to_send.buf.len() {
-                    println!("Written {} bytes, but the message was {} bytes",
+                    println!("{} Written {} bytes, but the message was {} bytes", debug_time.elapsed(),
                              len,
                              msg_to_send.buf.len());
                 }
@@ -920,7 +935,7 @@ fn thread_sender(port_name: OsString,
                     // upodate the delay
                     if let PprzMsgBaseType::Uint8(v) = msg.fields[0].value {
                         delay = v;
-                        println!("Updating delay to {} ms", delay);
+                        println!("{} Updating delay to {} ms", debug_time.elapsed(), delay);
                     }
 
                     // now we can move on an wait for the protection interval to end
@@ -934,7 +949,7 @@ fn thread_sender(port_name: OsString,
                     {
                         let mut msg_lock = MSG_QUEUE.lock();
                         if let Ok(ref mut msg_vector) = msg_lock {
-                            println!("Sending MSG {}", msg.name);
+                            println!("{} Adding MSG {}", debug_time.elapsed(), msg.name);
                             // append at the end of vector
                             msg_vector.push_back(msg);
                         }
