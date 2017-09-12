@@ -797,7 +797,7 @@ fn thread_sender(port_name: OsString,
     let mut buf = [0; 255]; // still have to manually allocate an array
     let mut rx = PprzTransport::new();
 
-	// Scheduling variables
+    // Scheduling variables
     let mut ap_status = RustlinkAutopiloStatus::WaitingForSyncChannel;
     let mut delay = 0;
     let mut rx_delay = Instant::now();
@@ -809,9 +809,9 @@ fn thread_sender(port_name: OsString,
     loop {
         // we got SYNC/CHANNEL value & the protection interval ended
         if delay != 0 {
-        	// TX variables
-		    let mut len = 0;
-		    let mut msg_buf: Vec<PprzTransport> = vec![];
+            // TX variables
+            let mut len = 0;
+            let mut msg_buf: Vec<PprzTransport> = vec![];
 
             // we got delay, lets match the cases
             match ap_status {
@@ -825,7 +825,7 @@ fn thread_sender(port_name: OsString,
                         ap_status = RustlinkAutopiloStatus::Transmitting;
                         // star counting time
                         t_2 = Instant::now();
-                        
+
                         println!("Protection interval ended!");
                     }
                 }
@@ -922,6 +922,19 @@ fn thread_sender(port_name: OsString,
                     // now we can move on an wait for the protection interval to end
                     ap_status = RustlinkAutopiloStatus::WaitingForProtectionInterval
                 } // end channel
+
+                if msg.name = "PING" {
+                    // send PONG as the first thing
+                    let mut msg = dictionary.find_msg_by_name("PONG").expect("PONG not found");
+                    msg.source = 1;
+
+                    let mut msg_lock = MSG_QUEUE.lock();
+                    if let Ok(ref mut msg_vector) = msg_lock {
+                        println!("Sending MSG {}", msg.name);
+                        // append at the end of vector
+                        msg_vector.push_back(msg);
+                    }
+                }
             } // end parse byte
         } // end for idx in 0..len
     } // end-loop
