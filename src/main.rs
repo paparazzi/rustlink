@@ -5,10 +5,10 @@ extern crate regex;
 extern crate serial;
 extern crate ivyrust;
 extern crate pprzlink;
+extern crate argparse;
 
-
-
-
+use argparse::{ArgumentParser, StoreTrue, Store};
+use std::env;
 use ivyrust::*;
 use std::{thread, time};
 use std::io::prelude::*;
@@ -42,13 +42,6 @@ const MAX_MSG_SIZE: usize = 256;
 /// Max number of bytes we can send before we can forfeit two way communication
 /// Includes the size of SYNC/CHANNEL message (7 bytes)
 const MSG_ONE_WAY_THRESHOLD: usize = 223;
-
-//const USAGE: &'static str = "
-//Usage:
-//  link -d <port> -s <baudrate>
-//  link -d <port> -s <baudrate> -b <ivy-bus>
-//  link (-h | --help)
-// ";
 
 
 #[derive(Debug)]
@@ -389,9 +382,19 @@ fn thread_scheduler(port_name: OsString,
     }
 }
 
-
+/*
+Usage: 
+  -b <ivy bus> Default is 127.255.255.255:2010
+  -d <port> Default is /dev/ttyUSB0
+  -s <baudrate>  Default is 9600
+  -id <id> Sets the link id. If multiple links are used, each must have a unique id. Default is -1
+  -status_period <period> Sets the period (in ms) of the LINK_REPORT status message. Default is 1000
+  -ping_period <period> Sets the period (in ms) of the PING message sent to aircrafs. Default is 5000
+  -help  Display this list of options
+  --help  Display this list of options
+*/
 fn main() {
-    let args = Args {
+    let mut args = Args {
         flag_h: false,
         flag_help: false,
         flag_b: false,
@@ -404,21 +407,28 @@ fn main() {
         arg_ping_period_ms: Some(1000 as u64),
         arg_datalink_period_ms: Some(1000 as u64),
     };
+    
+    println!("args: {:?}",args);
 
-
+    let pprz_root = match env::var("PAPARAZZI_SRC") {
+        Ok(var) => var,
+        Err(e) => {
+            println!("Error getting PAPARAZZI_SRC environment variable: {}", e);
+            return;
+        }
+    };
 
     // HACK: rather than implementing Clone for the dictionary, we just build another dictionary
-    let file = File::open("/xxx/pprzlink/message_definitions/v1.0/messages.xml")
-        .unwrap();
+
+    let xml_file = pprz_root + "/sw/ext/pprzlink/message_definitions/v1.0/messages.xml";
+    let file = File::open(xml_file.clone()).unwrap();
+    let dictionary = parser::build_dictionary(file);
+
     // push into the callback dictionary
-    DICTIONARY
-        .lock()
-        .unwrap()
-        .push(parser::build_dictionary(file));
+    DICTIONARY.lock().unwrap().push(dictionary);
 
     // construct a dictionary
-    let file = File::open("/xxx/pprzlink/message_definitions/v1.0/messages.xml")
-        .unwrap();
+    let file = File::open(xml_file).unwrap();
     let dictionary = parser::build_dictionary(file);
     let dictionary = Arc::new(dictionary);
     let dictionary_scheduler = Arc::clone(&dictionary);
@@ -428,11 +438,11 @@ fn main() {
     // spin the main loop
     let ivy_bus = args.arg_ivy_bus;
     let ping_period = args.arg_ping_period_ms;
-    let t1 = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
-                               println!("Error starting ivy thread: {}", e);
-                           } else {
-                               println!("Ivy thread finished");
-                           });
+    let _ = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
+                              println!("Error starting ivy thread: {}", e);
+                          } else {
+                              println!("Ivy thread finished");
+                          });
 
     // spin the serial loop
     let port = OsString::from(args.arg_port);
@@ -446,14 +456,10 @@ fn main() {
                            });
 
 
-
-
-
     let _ = thread::spawn(move || thread_ping(ping_period.unwrap(), dictionary_ping));
     let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
 
     // close
-    t1.join().expect("Error waiting for ivy thread to finish");
     t2.join()
         .expect("Error waiting for serial thread to finish");
     ivyrust::ivy_stop();
