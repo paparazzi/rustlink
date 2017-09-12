@@ -523,7 +523,7 @@ fn update_status(mut msg: PprzMessage,
         } // end match
     } // end for
 
-	println!("Status message: {}", msg);
+    println!("Status message: {}", msg);
 
     // time is up, send the report
     ivyrust::ivy_send_msg(msg.to_string().unwrap());
@@ -753,14 +753,16 @@ fn thread_message_generator(scale: f32, dictionary: Arc<PprzDictionary>) {
         let period = ((periods.pop().unwrap() * 1000.0) / scale) as u64;
 
         let handle = thread::spawn(move || {
-            // if found, update the global msg
-            let mut msg_lock = MSG_QUEUE.lock();
-            if let Ok(ref mut msg_vector) = msg_lock {
-                println!("Sending MSG {}", msg.name);
-                // append at the end of vector
-                msg_vector.push_back(msg);
-            }
             thread::sleep(time::Duration::from_millis(period));
+            {
+                let mut msg_lock = MSG_QUEUE.lock();
+                if let Ok(ref mut msg_vector) = msg_lock {
+                    println!("Sending MSG {}", msg.name);
+                    // append at the end of vector
+                    msg_vector.push_back(msg);
+                }
+            }
+
         });
         handles.push(handle);
     }
@@ -833,7 +835,7 @@ fn thread_sender(port_name: OsString,
                 }
                 RustlinkAutopiloStatus::Transmitting => {
                     // transmit data
-                    if t_2.elapsed() > Duration::from_millis(delay) {
+                    if t_2.elapsed() > Duration::from_millis(delay as u64) {
                         // reset the counter
                         delay = 0;
                         ap_status = RustlinkAutopiloStatus::WaitingForSyncChannel;
@@ -848,7 +850,7 @@ fn thread_sender(port_name: OsString,
                         println!("We have windown of {} bytes to send", max_len);
 
                         // try lock and don't wait
-                        let mut lock = MSG_QUEUE.try_lock();
+                        let mut lock = MSG_QUEUE.lock();
                         if let Ok(ref mut msg_queue) = lock {
                             while !msg_queue.is_empty() && (len <= max_len) {
                                 // get a message from the front of the queue
@@ -917,7 +919,7 @@ fn thread_sender(port_name: OsString,
 
                     // upodate the delay
                     if let PprzMsgBaseType::Uint8(v) = msg.fields[0].value {
-                        let delay = v;
+                        delay = v;
                         println!("Updating delay to {} ms", delay);
                     }
 
@@ -929,12 +931,13 @@ fn thread_sender(port_name: OsString,
                     // send PONG as the first thing
                     let mut msg = dictionary.find_msg_by_name("PONG").expect("PONG not found");
                     msg.source = 1;
-
-                    let mut msg_lock = MSG_QUEUE.lock();
-                    if let Ok(ref mut msg_vector) = msg_lock {
-                        println!("Sending MSG {}", msg.name);
-                        // append at the end of vector
-                        msg_vector.push_back(msg);
+                    {
+                        let mut msg_lock = MSG_QUEUE.lock();
+                        if let Ok(ref mut msg_vector) = msg_lock {
+                            println!("Sending MSG {}", msg.name);
+                            // append at the end of vector
+                            msg_vector.push_back(msg);
+                        }
                     }
                 }
             } // end parse byte
