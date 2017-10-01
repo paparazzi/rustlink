@@ -34,7 +34,7 @@ lazy_static! {
     static ref PING_TIME_VALUE: Mutex<f32> = Mutex::new(-1.0);
 }
 
-const PERIOD_MS: u64 = 50;
+const PERIOD_MS: u64 = 60;
 const CHANNEL_LEN: u64 = 7;
 const MS_PER_BYTE: f32 = 0.17;
 const PROTECTION_PERIOD: u64 = 6;
@@ -74,7 +74,7 @@ fn configure_port(mut port: serial::SystemPort,
 /// This thread only launchees `IvyMainLoop()` and loops forever
 /// Uses the optional argument specifying a non-default bus address
 fn thread_ivy_main(ivy_bus: String) -> Result<(), Box<Error>> {
-    ivyrust::ivy_init(String::from("RustLink"), String::from("Ready"));
+    ivyrust::ivy_init(String::from("Link"), String::from("Ready"));
     if !ivy_bus.is_empty() {
         ivyrust::ivy_start(Some(ivy_bus));
     } else {
@@ -90,7 +90,7 @@ fn thread_ivy_main(ivy_bus: String) -> Result<(), Box<Error>> {
 /// is the IVY bus, but it seems to be easier and probably
 /// good enough at least for now);
 fn pong_ivy_callback(_: Vec<String>) {
-    println!("Got PONG callback");
+    //println!("Got PONG callback");
     // we just got PONG back
 
     let mut ping_value_s = -1.0;
@@ -108,9 +108,10 @@ fn pong_ivy_callback(_: Vec<String>) {
     // update the value
     let mut time_lock = PING_TIME_VALUE.lock();
     if let Ok(ref mut ping_time) = time_lock {
-        // update the value
-        **ping_time = ping_value_s;
-        println!("PONG TIME: {}", ping_value_s);
+        // update the value (exponential moving average)
+        let alpha = 0.1;
+        **ping_time = alpha * ping_value_s + (1.0-alpha) * **ping_time;
+        //println!("PONG TIME: new: {}, cumm: {}", ping_value_s, **ping_time);
     }
 }
 
@@ -139,17 +140,17 @@ fn thread_ping(period: u64, dictionary: Arc<PprzDictionary>) {
             let mut msg_lock = MSG_QUEUE.lock();
             if let Ok(ref mut msg_queue) = msg_lock {
                 // push to front
-                println!("Pushing ping message");
+                //println!("Pushing PING message");
                 msg_queue.push_front(ping_msg.clone());
 
-                println!("PING: Message queue len: {}", msg_queue.len());
+                //println!("PING: Message queue len: {}", msg_queue.len());
 
                 // update the ping time
                 let mut time_lock = PING_TIME.lock();
                 if let Ok(ref mut ping_time) = time_lock {
                     let start_time = Instant::now();
                     **ping_time = start_time;
-                    println!("Updating PING TIME");
+                    //println!("Updating PING TIME");
                 }
             }
         }
@@ -204,14 +205,14 @@ fn global_ivy_callback(mut data: Vec<String>) {
 
                         // update from strig
                         msg.update_from_string(&values);
-                        println!("new message is: {}", msg);
+                        //println!("new message is: {}", msg);
 
                         // if found, update the global msg
                         let mut msg_lock = MSG_QUEUE.lock();
                         if let Ok(ref mut msg_vector) = msg_lock {
                             // append at the end of vector
                             msg_vector.push_back(msg);
-                            println!("Global callback: msg vector len = {}", msg_vector.len());
+                            //println!("Global callback: msg vector len = {}", msg_vector.len());
                         }
                         break;
                     }
@@ -303,15 +304,15 @@ fn thread_scheduler(port_name: OsString,
     loop {
     	let this_instant = instant.elapsed(); 
         if this_instant >= Duration::from_millis(PERIOD_MS) {
-        	println!("{} Time to send new SYNC/CHANNEL, instant.elapsed={}", debug_time.elapsed(), this_instant.as_secs() as f64 + this_instant.subsec_nanos() as f64 * 1e-9);
+        	//println!("{} Time to send new SYNC/CHANNEL, instant.elapsed={}", debug_time.elapsed(), this_instant.as_secs() as f64 + this_instant.subsec_nanos() as f64 * 1e-9);
         	
             // update time
             instant = Instant::now();
 
             // we need to send SYNC: get sync message
             let mut sync_msg = dictionary
-                .find_msg_by_name(String::from("CHANNEL").as_ref())
-                .unwrap();
+                .find_msg_by_name(String::from("SYNC_CHANNEL").as_ref())
+                .expect("SYNC_CHANNEL not found");
 
             // look at how many messages are in the queue
             let mut len = 0;
@@ -320,13 +321,14 @@ fn thread_scheduler(port_name: OsString,
             // try lock and don't wait
             let mut lock = MSG_QUEUE.lock();
             if let Ok(ref mut msg_queue) = lock {
-            	println!("{} MSG_queue locked", debug_time.elapsed());
+            	//println!("{} MSG_queue locked", debug_time.elapsed());
                 while !msg_queue.is_empty() && (len <= MAX_MSG_SIZE) {
                     // get a message from the front of the queue
                     let new_msg = msg_queue.pop_front().unwrap();
 
                     // get a transort
                     let mut tx = PprzTransport::new();
+                    let name = new_msg.to_string().unwrap();
 
                     // construct a message from the transport
                     tx.construct_pprz_msg(&new_msg.to_bytes());
@@ -336,13 +338,14 @@ fn thread_scheduler(port_name: OsString,
                         // increment lenght
                         len += tx.get_message_length();
                         // we have room for the message, so push it in
+                        println!("{} Add {} message", debug_time.elapsed(), name);
                         msg_buf.push(tx);
                     } else {
                         // we should abort counting here
-                        println!("{} too many messages, breaking from len={}", debug_time.elapsed(),len);
+                        //println!("{} too many messages, breaking from len={}", debug_time.elapsed(),len);
                         break;
                     }
-                    println!("{} Scheduler: Message queue len: {}", debug_time.elapsed(), msg_queue.len());
+                    //println!("{} Scheduler: Message queue len: {}", debug_time.elapsed(), msg_queue.len());
                 }
             }
 
@@ -363,13 +366,16 @@ fn thread_scheduler(port_name: OsString,
             // Send CHANNEL message
             let mut tx = PprzTransport::new();
             tx.construct_pprz_msg(&sync_msg.to_bytes());
-            let len = port.write(&tx.buf)?;
-            println!("{} Add SYNC/CHANNEL message, {} bytes", debug_time.elapsed(), len);
+            //println!("TX buf: {:?}",tx.buf); 
+            let _ = port.write(&tx.buf)?;
+            println!(" ");
+            println!("{} Sending SYNC/CHANNEL message, delay of {} ms", debug_time.elapsed(), delay);
 
             // Send our messages
             for msg_to_send in msg_buf {
+            	println!("{} Sending msg ID = {}",debug_time.elapsed(), msg_to_send.buf[3]);
                 let len = port.write(&msg_to_send.buf)?;
-                println!("{} Sent {} bytes", debug_time.elapsed(), len);
+                //println!("{} Sent {} bytes", debug_time.elapsed(), len);
                 status_report.tx_bytes += len;
                 status_report.tx_msgs += 1;
                 if len != msg_to_send.buf.len() {
@@ -378,6 +384,8 @@ fn thread_scheduler(port_name: OsString,
                              msg_to_send.buf.len());
                 }
             }
+            println!("{} Done sending messages", debug_time.elapsed());
+            println!(" ");
 
         } // end if instant.elapsed() >= Duration::from_millis(PERIOD_MS) { 
 
@@ -410,6 +418,7 @@ fn thread_scheduler(port_name: OsString,
                 }
 
                 // send the message
+                println!("{} Received new msg: {}", debug_time.elapsed(), msg.to_string().unwrap());
                 ivyrust::ivy_send_msg(msg.to_string().unwrap());
             } // end parse byte
         } // end for idx in 0..len
@@ -480,7 +489,7 @@ fn update_status(mut msg: PprzMessage,
         match field.name.as_ref() {
             "ac_id" => {
                 // this is AC_ID, we can leave blank for now
-                field.value = PprzMsgBaseType::String(String::from("1"));
+                field.value = PprzMsgBaseType::String(String::from("4"));
             }
             "link_id" => {
                 // link ID will be -1 unless we explicitly set it
@@ -532,7 +541,7 @@ fn update_status(mut msg: PprzMessage,
                 if let Ok(ref mut ping_time) = time_lock {
                     ping = **ping_time;
                 }
-                field.value = PprzMsgBaseType::Float(ping);
+                field.value = PprzMsgBaseType::Float(ping*1000.0); // convert to ms
             }
             _ => {
                 println!("update_status: Unknown field");
@@ -540,10 +549,13 @@ fn update_status(mut msg: PprzMessage,
         } // end match
     } // end for
 
-    println!("Status message: {}", msg);
+    //println!("Status message: {}", msg);
 
     // time is up, send the report
-    ivyrust::ivy_send_msg(msg.to_string().unwrap());
+    let mut s = msg.to_string().unwrap();
+    s.remove(0);
+    s.insert_str(0, "link");
+    ivyrust::ivy_send_msg(s);
 
     // update the report
     status_report.last_rx_bytes = status_report.rx_bytes;
