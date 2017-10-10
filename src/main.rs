@@ -7,6 +7,8 @@ extern crate ivyrust;
 extern crate pprzlink;
 extern crate clap;
 
+mod hacl;
+
 use clap::{Arg, App};
 use std::env;
 use ivyrust::*;
@@ -25,6 +27,7 @@ use std::sync::Arc;
 use time::*;
 use regex::Regex;
 use std::collections::VecDeque;
+use hacl::*;
 
 lazy_static! {
     static ref MSG_QUEUE: Mutex<VecDeque<PprzMessage>> = Mutex::new(VecDeque::new());
@@ -40,10 +43,23 @@ const MS_PER_BYTE: f32 = 0.17;
 const PROTECTION_PERIOD: u64 = 6;
 const MAX_MSG_SIZE: usize = 256;
 
+const KEY: [u8; 32] = [0x70, 0x3, 0xAA, 0xA, 0x8E, 0xE9, 0xA8, 0xFF, 0xD5, 0x46, 0x1E, 0xEC, 0x7C,
+                       0xC1, 0xC1, 0xA1, 0x6A, 0x43, 0xC9, 0xD4, 0xB3, 0x2B, 0x94, 0x7E, 0x76,
+                       0xF9, 0xD8, 0xE8, 0x1A, 0x31, 0x5D, 0xA8];
+
 /// Max number of bytes we can send before we can forfeit two way communication
 /// Includes the size of SYNC/CHANNEL message (7 bytes)
 const MSG_ONE_WAY_THRESHOLD: usize = 223;
 
+
+fn print_array(b: &[u8]) {
+    print!("data=[");
+    for i in b {
+        print!("0x{:x},", i);
+    }
+    println!("];");
+
+}
 
 /// Configure port to given settings
 ///
@@ -110,7 +126,7 @@ fn pong_ivy_callback(_: Vec<String>) {
     if let Ok(ref mut ping_time) = time_lock {
         // update the value (exponential moving average)
         let alpha = 0.1;
-        **ping_time = alpha * ping_value_s + (1.0-alpha) * **ping_time;
+        **ping_time = alpha * ping_value_s + (1.0 - alpha) * **ping_time;
         //println!("PONG TIME: new: {}, cumm: {}", ping_value_s, **ping_time);
     }
 }
@@ -240,14 +256,14 @@ struct RustlinkStatusReport {
 }
 
 struct RustlinkTime {
-	time: Instant,
+    time: Instant,
 }
 
 impl RustlinkTime {
-	fn elapsed(&self) -> f64 {
-		let duration = self.time.elapsed();
-		duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9
-	}
+    fn elapsed(&self) -> f64 {
+        let duration = self.time.elapsed();
+        duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9
+    }
 }
 
 /// Main serial thread
@@ -296,16 +312,16 @@ fn thread_scheduler(port_name: OsString,
 
     // get current time
     let mut instant = Instant::now();
-    
+
     // get debug time
-    let debug_time = RustlinkTime{time: Instant::now()};
+    let debug_time = RustlinkTime { time: Instant::now() };
 
     // proceed to read messages
     loop {
-    	let this_instant = instant.elapsed(); 
+        let this_instant = instant.elapsed();
         if this_instant >= Duration::from_millis(PERIOD_MS) {
-        	//println!("{} Time to send new SYNC/CHANNEL, instant.elapsed={}", debug_time.elapsed(), this_instant.as_secs() as f64 + this_instant.subsec_nanos() as f64 * 1e-9);
-        	
+            //println!("{} Time to send new SYNC/CHANNEL, instant.elapsed={}", debug_time.elapsed(), this_instant.as_secs() as f64 + this_instant.subsec_nanos() as f64 * 1e-9);
+
             // update time
             instant = Instant::now();
 
@@ -321,7 +337,7 @@ fn thread_scheduler(port_name: OsString,
             // try lock and don't wait
             let mut lock = MSG_QUEUE.lock();
             if let Ok(ref mut msg_queue) = lock {
-            	//println!("{} MSG_queue locked", debug_time.elapsed());
+                //println!("{} MSG_queue locked", debug_time.elapsed());
                 while !msg_queue.is_empty() && (len <= MAX_MSG_SIZE) {
                     // get a message from the front of the queue
                     let new_msg = msg_queue.pop_front().unwrap();
@@ -366,20 +382,25 @@ fn thread_scheduler(port_name: OsString,
             // Send CHANNEL message
             let mut tx = PprzTransport::new();
             tx.construct_pprz_msg(&sync_msg.to_bytes());
-            //println!("TX buf: {:?}",tx.buf); 
+            //println!("TX buf: {:?}",tx.buf);
             let _ = port.write(&tx.buf)?;
             println!(" ");
-            println!("{} Sending SYNC/CHANNEL message, delay of {} ms", debug_time.elapsed(), delay);
+            println!("{} Sending SYNC/CHANNEL message, delay of {} ms",
+                     debug_time.elapsed(),
+                     delay);
 
             // Send our messages
             for msg_to_send in msg_buf {
-            	println!("{} Sending msg ID = {}",debug_time.elapsed(), msg_to_send.buf[3]);
+                println!("{} Sending msg ID = {}",
+                         debug_time.elapsed(),
+                         msg_to_send.buf[3]);
                 let len = port.write(&msg_to_send.buf)?;
                 //println!("{} Sent {} bytes", debug_time.elapsed(), len);
                 status_report.tx_bytes += len;
                 status_report.tx_msgs += 1;
                 if len != msg_to_send.buf.len() {
-                    println!("{} Written {} bytes, but the message was {} bytes", debug_time.elapsed(),
+                    println!("{} Written {} bytes, but the message was {} bytes",
+                             debug_time.elapsed(),
                              len,
                              msg_to_send.buf.len());
                 }
@@ -387,7 +408,7 @@ fn thread_scheduler(port_name: OsString,
             println!("{} Done sending messages", debug_time.elapsed());
             println!(" ");
 
-        } // end if instant.elapsed() >= Duration::from_millis(PERIOD_MS) { 
+        } // end if instant.elapsed() >= Duration::from_millis(PERIOD_MS) {
 
         // read data (no timeout right now)
         let len = match port.read(&mut buf[..]) {
@@ -401,25 +422,64 @@ fn thread_scheduler(port_name: OsString,
             if rx.parse_byte(buf[idx]) {
                 // TODO: here would we handle encryption
                 // handle_crypto();
-
-                status_report.rx_msgs += 1;
-                let name = dictionary
-                    .get_msg_name(PprzMsgClassID::Telemetry, rx.buf[1])
-                    .unwrap();
-                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
-
-                // update message fields with real values
-                msg.update(&rx.buf);
-
-                // check for PONG
-                if msg.name == "PONG" {
-                    // update time
-                    pong_ivy_callback(vec![]);
+                let data_len = rx.buf.len();
+                println!("payload len ={}", data_len);
+                
+                println!("rx.buf=");
+                print_array(&rx.buf); 
+                
+                let mut nonce: [u8;12] = [0;12];
+                for i in 0..3 {
+	                nonce[i] = rx.buf.get(i).unwrap().clone();	
                 }
+                println!("nonce=");
+                print_array(&nonce);
+                
+                let mut ciphertext: [u8;256] = [0;256];
+                let mut mlen = 0;
+                for i in 0..data_len-20 {
+                	let idx = 4 + i;
+                	mlen = mlen + 1;
+                	ciphertext[i] = rx.buf.get(idx).unwrap().clone();
+                	
+                }
+                println!("ciphertext=");
+                print_array(&ciphertext);
+                
+                let mut mac: [u8;16] = [0;16];
+                for i in 0 .. 16 {
+                	let idx = data_len-16+i;
+                	mac[i] = rx.buf.get(idx).unwrap().clone();
+                }
+                println!("mac=");
+                print_array(&mac);
+                
+                println!("mlen={}",mlen);
+                
+                let message: [u8;256] = [0;256];
+                let l = hacl::decrypt(&ciphertext, &mac, &message, mlen, &KEY, &nonce);
+                println!("Decryption operation: {}",l);
 
-                // send the message
-                println!("{} Received new msg: {}", debug_time.elapsed(), msg.to_string().unwrap());
-                ivyrust::ivy_send_msg(msg.to_string().unwrap());
+//                status_report.rx_msgs += 1;
+//                let name = dictionary
+//                    .get_msg_name(PprzMsgClassID::Telemetry, rx.buf[1])
+//                    .unwrap();
+//                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
+//
+//                // update message fields with real values
+//                msg.update(&rx.buf);
+//
+//                // check for PONG
+//                if msg.name == "PONG" {
+//                    // update time
+//                    pong_ivy_callback(vec![]);
+//                }
+//
+//                // send the message
+//                println!("{} Received new msg: {}",
+//                         debug_time.elapsed(),
+//                         msg.to_string().unwrap());
+//                ivyrust::ivy_send_msg(msg.to_string().unwrap());
             } // end parse byte
         } // end for idx in 0..len
 
@@ -541,7 +601,7 @@ fn update_status(mut msg: PprzMessage,
                 if let Ok(ref mut ping_time) = time_lock {
                     ping = **ping_time;
                 }
-                field.value = PprzMsgBaseType::Float(ping*1000.0); // convert to ms
+                field.value = PprzMsgBaseType::Float(ping * 1000.0); // convert to ms
             }
             _ => {
                 println!("update_status: Unknown field");
@@ -603,8 +663,6 @@ fn main() {
                  .help("Use Rustlink to simulate the autopilot")
                  .takes_value(false))
         .get_matches();
-
-
 
     let ivy_bus = matches
         .value_of("ivy_bus")
@@ -836,8 +894,8 @@ fn thread_sender(port_name: OsString,
     let mut rx_delay = Instant::now();
     let mut t_2 = Instant::now();
 
-	// get debug time
-    let debug_time = RustlinkTime{time: Instant::now()};
+    // get debug time
+    let debug_time = RustlinkTime { time: Instant::now() };
 
 
     // proceed to read messages
@@ -878,7 +936,9 @@ fn thread_sender(port_name: OsString,
                         // calculate max message size we are allowed to send
                         // TODO: update delay in case we don't have mutex right away
                         let max_len = (delay as f32 / MS_PER_BYTE) as u8;
-                        println!("{} We have windown of {} bytes to send", debug_time.elapsed(), max_len);
+                        println!("{} We have windown of {} bytes to send",
+                                 debug_time.elapsed(),
+                                 max_len);
 
                         // try lock and don't wait
                         let mut lock = MSG_QUEUE.lock();
@@ -901,10 +961,14 @@ fn thread_sender(port_name: OsString,
                                     msg_buf.push(tx);
                                 } else {
                                     // we should abort counting here
-                                    println!("{} too many messages, breaking from len={}", debug_time.elapsed(), len);
+                                    println!("{} too many messages, breaking from len={}",
+                                             debug_time.elapsed(),
+                                             len);
                                     break;
                                 }
-                                println!("{} Scheduler: Message queue len: {}", debug_time.elapsed(), msg_queue.len());
+                                println!("{} Scheduler: Message queue len: {}",
+                                         debug_time.elapsed(),
+                                         msg_queue.len());
                             } // end while lock on msg_queue
                         } // end mutex lock
                     } // end else
@@ -916,7 +980,8 @@ fn thread_sender(port_name: OsString,
             for msg_to_send in msg_buf {
                 let len = port.write(&msg_to_send.buf)?;
                 if len != msg_to_send.buf.len() {
-                    println!("{} Written {} bytes, but the message was {} bytes", debug_time.elapsed(),
+                    println!("{} Written {} bytes, but the message was {} bytes",
+                             debug_time.elapsed(),
                              len,
                              msg_to_send.buf.len());
                 }
@@ -933,7 +998,7 @@ fn thread_sender(port_name: OsString,
         // parse received data, we are waiting for CHANNEL message
         for idx in 0..len {
             if rx.parse_byte(buf[idx]) {
-            	println!("{} Got new message", debug_time.elapsed());
+                println!("{} Got new message", debug_time.elapsed());
                 // update the protection interval
                 rx_delay = Instant::now();
 
