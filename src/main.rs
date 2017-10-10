@@ -441,10 +441,9 @@ fn thread_scheduler(port_name: OsString,
                 	let idx = 4 + i;
                 	mlen = mlen + 1;
                 	ciphertext[i] = rx.buf.get(idx).unwrap().clone();
-                	
                 }
                 println!("ciphertext=");
-                print_array(&ciphertext);
+                print_array(&ciphertext[0..mlen]);
                 
                 let mut mac: [u8;16] = [0;16];
                 for i in 0 .. 16 {
@@ -457,29 +456,53 @@ fn thread_scheduler(port_name: OsString,
                 println!("mlen={}",mlen);
                 
                 let message: [u8;256] = [0;256];
-                let l = hacl::decrypt(&ciphertext, &mac, &message, mlen, &KEY, &nonce);
-                println!("Decryption operation: {}",l);
+                println!("message before decryption=");
+                print_array(&message[0..mlen]); 
+                
+                let l = hacl::decrypt(&ciphertext, &mac, &message, mlen as u32, &KEY, &nonce);
+                println!("Decryption operation: {}, mlen={}",l,mlen);
 
-//                status_report.rx_msgs += 1;
-//                let name = dictionary
-//                    .get_msg_name(PprzMsgClassID::Telemetry, rx.buf[1])
-//                    .unwrap();
-//                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
-//
-//                // update message fields with real values
-//                msg.update(&rx.buf);
-//
-//                // check for PONG
-//                if msg.name == "PONG" {
-//                    // update time
-//                    pong_ivy_callback(vec![]);
-//                }
-//
-//                // send the message
-//                println!("{} Received new msg: {}",
-//                         debug_time.elapsed(),
-//                         msg.to_string().unwrap());
-//                ivyrust::ivy_send_msg(msg.to_string().unwrap());
+				println!("message after decryption=");
+                print_array(&message[0..mlen]);
+
+				if l == 1 {
+					println!("Decryption failed");
+					continue;
+				} else {
+					println!("Decryption OK");
+					for i in 0..mlen as usize {
+						rx.buf[i] = message[i];
+					}
+				}
+				
+				println!("rx.buf=");
+                print_array(&rx.buf); 
+                
+                println!("msg_id={}",rx.buf[1]);
+				
+                status_report.rx_msgs += 1;
+                let name = dictionary
+                    .get_msg_name(PprzMsgClassID::Telemetry, rx.buf[1])
+                    .unwrap();
+                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
+                
+                println!("Found message: {}", msg.name);
+                println!("Found sender: {}", rx.buf[0]);
+
+                // update message fields with real values
+                msg.update(&rx.buf);
+
+                // check for PONG
+                if msg.name == "PONG" {
+                    // update time
+                    pong_ivy_callback(vec![]);
+                }
+
+                // send the message
+                println!("{} Received new msg: {}",
+                         debug_time.elapsed(),
+                         msg.to_string().unwrap());
+                ivyrust::ivy_send_msg(msg.to_string().unwrap());
             } // end parse byte
         } // end for idx in 0..len
 
