@@ -6,8 +6,8 @@ extern crate serial;
 extern crate ivyrust;
 extern crate pprzlink;
 extern crate clap;
-
-mod hacl;
+extern crate hacl;
+extern crate rand;
 
 use clap::{Arg, App};
 use std::env;
@@ -27,7 +27,9 @@ use std::sync::Arc;
 use time::*;
 use regex::Regex;
 use std::collections::VecDeque;
-use hacl::*;
+use std::io::BufReader;
+use rand::Rng;
+use rand::os::OsRng;
 
 lazy_static! {
     static ref MSG_QUEUE: Mutex<VecDeque<PprzMessage>> = Mutex::new(VecDeque::new());
@@ -37,19 +39,143 @@ lazy_static! {
     static ref PING_TIME_VALUE: Mutex<f32> = Mutex::new(-1.0);
 }
 
-const PERIOD_MS: u64 = 60;
-const CHANNEL_LEN: u64 = 7;
-const MS_PER_BYTE: f32 = 0.17;
-const PROTECTION_PERIOD: u64 = 6;
-const MAX_MSG_SIZE: usize = 256;
+const KEY_LEN: usize = 32;
+const SIGN_LEN: usize = 64;
+const MAC_LEN: usize = 16;
+const NONCE_LEN: usize = 12;
+const CRYPTO_OVERHEAD: usize = 20;
+const COUNTER_LEN: usize = 4;
 
-const KEY: [u8; 32] = [0x70, 0x3, 0xAA, 0xA, 0x8E, 0xE9, 0xA8, 0xFF, 0xD5, 0x46, 0x1E, 0xEC, 0x7C,
-                       0xC1, 0xC1, 0xA1, 0x6A, 0x43, 0xC9, 0xD4, 0xB3, 0x2B, 0x94, 0x7E, 0x76,
-                       0xF9, 0xD8, 0xE8, 0x1A, 0x31, 0x5D, 0xA8];
+//struct Ed25519Signature {
+//    sign: [u8; SIGN_LEN],
+//}
 
-/// Max number of bytes we can send before we can forfeit two way communication
-/// Includes the size of SYNC/CHANNEL message (7 bytes)
-const MSG_ONE_WAY_THRESHOLD: usize = 223;
+#[derive(Debug)]
+struct GecPrivKey {
+    privkey: [u8; KEY_LEN],
+    pubkey: [u8; KEY_LEN],
+}
+
+impl GecPrivKey {
+    pub fn new() -> GecPrivKey {
+        let q = [0; KEY_LEN];
+        let p = [0; KEY_LEN];
+        GecPrivKey {
+            privkey: q,
+            pubkey: p,
+        }
+    }
+}
+
+#[derive(Debug)]
+struct GecPubKey {
+    pubkey: [u8; KEY_LEN],
+}
+
+impl GecPubKey {
+    pub fn new() -> GecPubKey {
+        let p = [0; KEY_LEN];
+        GecPubKey { pubkey: p }
+    }
+}
+
+#[derive(Debug)]
+struct GecSymKey {
+    key: [u8; KEY_LEN],
+    nonce: [u8; NONCE_LEN],
+    ctr: u32,
+}
+
+impl GecSymKey {
+    pub fn new() -> GecSymKey {
+        let k = [0; KEY_LEN];
+        let n = [0; NONCE_LEN];
+        let c = 0;
+        GecSymKey {
+            key: k,
+            nonce: n,
+            ctr: c,
+        }
+    }
+}
+
+#[derive(Debug)]
+enum StsParty {
+    Initiator = 0,
+    Responder = 1,
+}
+
+#[derive(Debug)]
+#[derive(PartialEq)]
+enum StsStage {
+    Init,
+    //WaitMsg1,
+    WaitMsg2,
+    //WaitMsg3,
+    CryptoOK,
+}
+
+#[allow(non_camel_case_types)]
+#[derive(Debug)]
+#[derive(PartialEq)]
+enum StsMsgType {
+    P_AE = 0,
+    P_BE = 1,
+    SIG = 2,
+}
+
+#[allow(non_camel_case_types,dead_code)]
+#[derive(Debug)]
+enum StsError {
+    ERROR_NONE,
+    // RESPONDER ERRORS
+    MSG1_TIMEOUT_ERROR,
+    MSG1_ENCRYPT_ERROR,
+    MSG3_TIMEOUT_ERROR,
+    MSG3_DECRYPT_ERROR,
+    MSG3_SIGNVERIFY_ERROR,
+    // INITIATOR ERRORS
+    MSG2_TIMEOUT_ERROR,
+    MSG2_DECRYPT_ERROR,
+    MSG2_SIGNVERIFY_ERROR,
+    MSG3_ENCRYPT_ERROR,
+    // BOTH PARTIES
+    UNEXPECTED_MSG_TYPE_ERROR,
+    UNEXPECTED_STS_STAGE_ERROR,
+    UNEXPECTED_MSG_ERROR,
+}
+
+#[derive(Debug)]
+struct GecSts {
+    party: StsParty,
+    stage: StsStage,
+    last_error: StsError,
+    their_public_key: GecPubKey,
+    my_private_key: GecPrivKey,
+    their_public_ephemeral: GecPubKey,
+    my_private_ephemeral: GecPrivKey,
+    their_symmetric_key: GecSymKey,
+    my_symmetric_key: GecSymKey,
+}
+
+impl GecSts {
+    pub fn new(p_a: &[u8; 32], q_a: &[u8; 32], p_b: &[u8; 32]) -> GecSts {
+        GecSts {
+            party: StsParty::Initiator,
+            stage: StsStage::Init,
+            last_error: StsError::ERROR_NONE,
+            their_public_key: GecPubKey { pubkey: p_b.clone() },
+            my_private_key: GecPrivKey {
+                privkey: q_a.clone(),
+                pubkey: p_a.clone(),
+            },
+            their_public_ephemeral: GecPubKey::new(),
+            my_private_ephemeral: GecPrivKey::new(),
+            their_symmetric_key: GecSymKey::new(),
+            my_symmetric_key: GecSymKey::new(),
+        }
+    }
+}
 
 
 fn print_array(b: &[u8]) {
@@ -61,13 +187,584 @@ fn print_array(b: &[u8]) {
 
 }
 
+
+fn transform_u32_to_array_of_u8(x: u32) -> [u8; 4] {
+    let b1: u8 = ((x >> 24) & 0xff) as u8;
+    let b2: u8 = ((x >> 16) & 0xff) as u8;
+    let b3: u8 = ((x >> 8) & 0xff) as u8;
+    let b4: u8 = (x & 0xff) as u8;
+    return [b4, b3, b2, b1];
+}
+
+
+
+/// Main serial thread
+///
+/// Manages reading/writing to/from the serial port `port_name`
+/// at given `baudrate`, and requires a dictionary of messages.
+///
+/// Every SYNC_PERIOD ms it sends SYNC/CHANNEL message and any pending
+/// messages stored in the message queue.
+///
+/// Otherwise reads from serial port, and if receives a new message it sends
+/// it over IVY bus.
+///
+/// If new message from IVY bus is to be send, it saves it to the message queue (FIFO).
+fn thread_main(
+    port_name: OsString,
+    baudrate: usize,
+    dictionary: Arc<PprzDictionary>,
+    status_report_period: u64,
+    p_a: [u8; KEY_LEN],
+    q_a: [u8; KEY_LEN],
+    p_b: [u8; KEY_LEN],
+) -> Result<(), Box<Error>> {
+    let port = serial::open(&port_name)?;
+    let mut port = match configure_port(port, baudrate) {
+        Ok(port) => port,
+        Err(e) => return Err(e),
+    };
+
+    // initialize variables LINK_REPORT
+    let mut status_report_timer = Instant::now();
+    let status_report_period = Duration::from_millis(status_report_period);
+    let mut report_msg = dictionary
+        .find_msg_by_name(String::from("LINK_REPORT").as_ref())
+        .expect("LINK_REPORT message not found");
+    let mut status_report = RustlinkStatusReport {
+        tx_bytes: 0,
+        rx_bytes: 0,
+        rx_msgs: 0,
+        tx_msgs: 0,
+        last_tx_bytes: 0,
+        last_rx_bytes: 0,
+        last_rx_msgs: 0,
+        last_tx_msgs: 0,
+    };
+
+    // initialize an emty buffer
+    let mut buf = [0; 255]; // still have to manually allocate an array
+    let mut rx = PprzTransport::new();
+
+    // get debug time
+    let debug_time = RustlinkTime { time: Instant::now() };
+
+    // initialize sts struct
+    let mut sts = GecSts::new(&p_a, &q_a, &p_b);
+
+    // get current time
+    //let mut instant = Instant::now();
+
+
+    loop {
+
+        if sts.stage == StsStage::CryptoOK {
+            // process messages from the queue and encrypt them before sending
+            let mut lock = MSG_QUEUE.lock();
+            if let Ok(ref mut msg_queue) = lock {
+                //println!("{} MSG_queue locked", debug_time.elapsed());
+                while !msg_queue.is_empty() {
+                    // get a message from the front of the queue
+                    let new_msg = msg_queue.pop_front().unwrap();
+                    println!("Sending {}", new_msg.to_string().unwrap());
+
+                    // get a transort
+                    let mut tx = PprzTransport::new();
+                    let mut buf = vec![];
+
+                    // construct a message from the transport
+
+                    // update counter
+                    sts.my_symmetric_key.ctr = sts.my_symmetric_key.ctr + 1;
+                    let counter = transform_u32_to_array_of_u8(sts.my_symmetric_key.ctr.to_le());
+                    sts.my_symmetric_key.nonce[0] = counter[0];
+                    sts.my_symmetric_key.nonce[1] = counter[1];
+                    sts.my_symmetric_key.nonce[2] = counter[2];
+                    sts.my_symmetric_key.nonce[3] = counter[3];
+                    
+                    //println!("my key: {:?}", sts.my_symmetric_key.key);
+
+                    // transport handles STX + len + checksum (4 bytes)
+                    // COUNTER 4 bytes
+                    buf.push(counter[0]);
+                    buf.push(counter[1]);
+                    buf.push(counter[2]);
+                    buf.push(counter[3]);
+
+                    // encrypt message
+                    let plaintext = new_msg.to_bytes();
+                    let mut ciphertext = plaintext.clone();
+                    let mut mac = vec![0; MAC_LEN];
+                    let aad = vec![];
+
+                    let success = match hacl::chacha20poly1305_aead_encrypt(
+                        ciphertext.as_mut_slice(),
+                        mac.as_mut_slice(),
+                        &plaintext,
+                        &aad,
+                        &sts.my_symmetric_key.key,
+                        &sts.my_symmetric_key.nonce,
+                    ) {
+                        Ok(val) => val,
+                        Err(msg) => panic!("Error! {}", msg),
+                    };
+                    
+                    if !success {
+                    	println!("error encrypting message");
+                    	break;
+                    }
+                    
+                    // add ciphertext
+                    buf.append(&mut ciphertext);
+                    
+                    // add mac
+                    buf.append(&mut mac);
+
+                    tx.construct_pprz_msg(&buf);
+                    //println!("message len = {}", tx.buf.len());
+                    //print_array(&tx.buf);
+
+                    let len = port.write(&tx.buf)?;
+                    status_report.tx_bytes += len;
+                    status_report.tx_msgs += 1;
+                    if len != tx.buf.len() {
+                        println!(
+                            "{} Written {} bytes, but the message was {} bytes",
+                            debug_time.elapsed(),
+                            len,
+                            tx.buf.len()
+                        );
+                    }
+                }
+            }
+        } else {
+            // match the protocol stage and send messages if needed
+            match sts.stage {
+                StsStage::Init => {
+                    // set to MSG 1
+                    // initiate sts
+                    // 1. A generates an ephemeral (random) curve25519 key pair (Pae, Qae) and sends Pae.
+                    // generate public and private keys
+                    let mut rng = match OsRng::new() {
+                        Ok(gen) => gen,
+                        Err(e) => panic!("Failed to obtain OS RNG: {}", e),
+                    };
+
+                    let mut p_ae: [u8; KEY_LEN] = [0; KEY_LEN];
+                    let mut q_ae: [u8; KEY_LEN] = [0; KEY_LEN];
+                    let mut basepoint: [u8; KEY_LEN] = [0; KEY_LEN];
+                    basepoint[0] = 9;
+
+                    rng.fill_bytes(&mut q_ae);
+
+                    hacl::curve25519_crypto_scalarmult(&mut p_ae, &q_ae, &basepoint).unwrap();
+
+                    let my_ephemeral = GecPrivKey {
+                        privkey: q_ae,
+                        pubkey: p_ae,
+                    };
+                    // set the ephemeral keys
+                    sts.my_private_ephemeral = my_ephemeral;
+
+                    // create a new message
+                    let mut msg1 = dictionary
+                        .find_msg_by_name(String::from("KEY_EXCHANGE_GCS").as_ref())
+                        .unwrap();
+
+                    // lets build the buffer manually (TODO: add proper handlers to pprzlink)
+                    // source=0 (GCS), msg_id, type, p_ae
+                    let mut msg1_buf: Vec<u8> =
+                        vec![0, msg1.id, StsMsgType::P_AE as u8, KEY_LEN as u8];
+                    for idx in 0..KEY_LEN {
+                        msg1_buf.push(sts.my_private_ephemeral.pubkey[idx]);
+                    }
+                    msg1.update(&msg1_buf);
+
+                    // get a transort
+                    let mut tx = PprzTransport::new();
+                    tx.construct_pprz_msg(&msg1.to_bytes());
+                    println!("MSG1: {:?}", tx.buf);
+
+                    let len = port.write(&tx.buf)?;
+                    status_report.tx_bytes += len;
+                    status_report.tx_msgs += 1;
+                    if len != tx.buf.len() {
+                        println!(
+                            "{} Written {} bytes, but the message was {} bytes",
+                            debug_time.elapsed(),
+                            len,
+                            tx.buf.len()
+                        );
+                    }
+
+                    // if OK
+                    sts.stage = StsStage::WaitMsg2; // will be handled upon receiving a message
+                }
+                StsStage::WaitMsg2 => {
+                    // check for timeout
+                    // if OK
+                    // sts.stage = StsStage::CryptoOK;
+                }
+                _ => {
+                    // illegal states, shouldn't ever happen
+                }
+            }
+        }
+
+
+        // read data (no timeout right now)
+        let len = match port.read(&mut buf[..]) {
+            Ok(len) => len,
+            Err(_) => continue,
+        };
+        status_report.rx_bytes += len;
+        //println!("received {} bytes", len);
+
+        // parse received data and optionally send a message
+        // spprz_check_and_parse()
+        for idx in 0..len {
+            //println!("byte = {:x}", buf[idx]);
+            if rx.parse_byte(buf[idx]) {
+                //
+                if sts.stage == StsStage::CryptoOK {
+                    // handle encrypted messages
+                    // and continue as normal
+                    // the format is
+                    // COUNTER (4 bytes)
+                    // encrypted SENDER_ID
+                    // encrypted MSG_ID
+                    // encrypted MSG_PAYLOAD (messages.xml)
+                    // TAG (16 bytes)
+                    //println!("Got encrypted message!");
+                    //print_array(&rx.buf);
+
+                    // check counter
+                    let counter: u32 = u32::from_le(
+                        rx.buf[0] as u32 | (rx.buf[1] as u32) << 8 | (rx.buf[2] as u32) << 16 |
+                            (rx.buf[3] as u32) << 24,
+                    );
+                    if counter <= sts.their_symmetric_key.ctr {
+                        println!(
+                            "Counter error: curret = {}, received = {}",
+                            sts.their_symmetric_key.ctr,
+                            counter
+                        );
+                    } else {
+                        // update counter
+                        sts.their_symmetric_key.ctr = counter;
+                    }
+
+                    // update nonce
+                    sts.their_symmetric_key.nonce[0] = rx.buf[0];
+                    sts.their_symmetric_key.nonce[1] = rx.buf[1];
+                    sts.their_symmetric_key.nonce[2] = rx.buf[2];
+                    sts.their_symmetric_key.nonce[3] = rx.buf[3];
+
+                    // get length
+                    let clen: usize = rx.length as usize;
+                    /*
+                    println!("clen={}", clen);
+                    println!("rx.length={}", rx.length);
+                    println!("counter={}", sts.their_symmetric_key.ctr);
+                    println!("rx.buf=");
+                    print_array(&rx.buf);
+                    println!("nonce=");
+                    print_array(&sts.their_symmetric_key.nonce);
+                    println!("mac=");
+                    print_array(&rx.buf[clen - MAC_LEN..clen]);
+                    println!("ciphertext=");
+                    print_array(&rx.buf[COUNTER_LEN..clen - MAC_LEN]);
+                    println!("my nonce: {:?}", sts.my_symmetric_key.nonce);
+                    println!("their nonce: {:?}", sts.their_symmetric_key.nonce);
+*/
+
+                    let mut pt: Vec<u8> = vec![0; clen - CRYPTO_OVERHEAD];
+                    let aad = vec![];
+                    let sucess = match hacl::chacha20poly1305_aead_decrypt(
+                        pt.as_mut_slice(), // plaintext
+                        &rx.buf[clen - MAC_LEN..clen], // mac
+                        &rx.buf[COUNTER_LEN..clen - MAC_LEN], // ciphertext
+                        &aad,
+                        &sts.their_symmetric_key.key,
+                        &sts.their_symmetric_key.nonce,
+                    ) {
+                        Ok(val) => val,
+                        Err(msg) => panic!("Error! {}", msg),
+                    };
+
+                    if sucess {
+                        // copy over to rx.buf
+                        //println!("Decrypt ok, buf={:?}", rx.buf);
+                        rx.buf.resize(pt.len(), 0);
+                        rx.buf.clone_from_slice(pt.as_slice());
+
+                    } else {
+                        // drop the message
+                        println!("decrypt not sucessful");
+                        continue;
+                    }
+                } else {
+                    // process unencrypted messages
+                    // spprz_process_sts_msg()
+                    match sts.stage {
+                        StsStage::WaitMsg2 => {
+                            // expecting KEY_EXCHANGE_UAV, type P_BE
+                            // assume it came with the right AC_ID
+                            // create a new message
+                            let mut msg2 = dictionary
+                                .find_msg_by_name(String::from("KEY_EXCHANGE_UAV").as_ref())
+                                .unwrap();
+                            // the buffer contains all the data
+                            if msg2.id != rx.buf[1] {
+                                println!("expected msg id = {}, received {}", msg2.id, rx.buf[1]);
+                                continue;
+                            }
+
+                            if StsMsgType::P_BE as u8 != rx.buf[2] {
+                                println!(
+                                    "expected msg type = {:?}, received {}",
+                                    StsMsgType::P_BE as u8,
+                                    rx.buf[2]
+                                );
+                                continue;
+                            }
+                            // update message ?
+                            //msg2.update(&rx.buf);
+
+                            // message2 = [ Pbe (32 bytes) | Encrypted Signature (64 bytes) | MAC (16 bytes) ]
+                            let payload_len = 112;
+                            if payload_len != rx.buf[3] {
+                                println!(
+                                    "expected payload len = {}, received {}",
+                                    payload_len,
+                                    rx.buf[3]
+                                );
+                                continue;
+                            }
+                            let payload = &rx.buf[4..payload_len as usize + 4];
+                            let p_be = &payload[0..KEY_LEN];
+                            sts.their_public_ephemeral.pubkey.clone_from_slice(p_be);
+                            let encrypted_sign = &payload[KEY_LEN..KEY_LEN + SIGN_LEN];
+                            let mac = &payload[KEY_LEN + SIGN_LEN..KEY_LEN + SIGN_LEN + MAC_LEN];
+
+                            // 7. A computes the shared secret: z = scalar_multiplication(Qae, Pbe)
+                            let mut z: [u8; KEY_LEN] = [0; KEY_LEN];
+                            // Curve25519_crypto_scalarmult(z, sts.myPrivateKeyEphemeral.priv, sts.theirPublicKeyEphemeral.pub);
+                            hacl::curve25519_crypto_scalarmult(
+                                &mut z,
+                                &sts.my_private_ephemeral.privkey,
+                                &p_be,
+                            ).unwrap();
+
+                            // 8. A uses the key derivation function kdf(z,1) to compute Kb || Sb, kdf(z,0) to compute Ka || Sa, and kdf(z,2)
+                            // kdf(z,0) to compute Ka || Sa
+                            let mut ka_sa = vec![0; 64];
+                            let mut input = z.to_vec();
+                            input.push(StsParty::Initiator as u8);
+                            assert_eq!(
+                                hacl::sha2_512_hash(ka_sa.as_mut_slice(), input.as_slice()),
+                                Ok(())
+                            );
+                            input.pop();
+                            // update my symmetric key
+                            sts.my_symmetric_key.key.clone_from_slice(
+                                &ka_sa[0..KEY_LEN],
+                            );
+                            sts.my_symmetric_key.nonce.clone_from_slice(
+                                &ka_sa[KEY_LEN..
+                                           KEY_LEN + NONCE_LEN],
+                            );
+
+                            // kdf(z,1) to compute Kb || Sb
+                            let mut kb_sb = vec![0; 64];
+                            input.push(StsParty::Responder as u8);
+                            assert_eq!(
+                                hacl::sha2_512_hash(kb_sb.as_mut_slice(), input.as_slice()),
+                                Ok(())
+                            );
+                            // update their symmetric key
+                            sts.their_symmetric_key.key.clone_from_slice(
+                                &kb_sb[0..KEY_LEN],
+                            );
+                            sts.their_symmetric_key.nonce.clone_from_slice(
+                                &kb_sb[KEY_LEN..
+                                           KEY_LEN + NONCE_LEN],
+                            );
+
+                            // 9. A decrypts the remainder of the message, verifies the signature.
+                            // Pbe || Ekey=Kb,IV=Sb||zero(sig)
+                            let mut sig = [0; SIGN_LEN];
+                            let aad = vec![];
+                            let success = match hacl::chacha20poly1305_aead_decrypt(
+                                &mut sig,
+                                mac,
+                                encrypted_sign,
+                                &aad,
+                                &sts.their_symmetric_key.key,
+                                &sts.their_symmetric_key.nonce,
+                            ) {
+                                Ok(val) => val,
+                                Err(msg) => panic!("Error! {}", msg),
+                            };
+                            assert_eq!(success, true);
+
+                            println!(">>>>  9. verifies the signature.");
+                            let mut pbe_pae: Vec<u8> = vec![];
+                            pbe_pae.extend_from_slice(&sts.their_public_ephemeral.pubkey); // p_be
+                            pbe_pae.extend_from_slice(&sts.my_private_ephemeral.pubkey); // p_ae
+
+                            let success = match hacl::ed25519_verify(
+                                &sts.their_public_key.pubkey,
+                                &pbe_pae,
+                                &sig,
+                            ) {
+                                Ok(val) => val,
+                                Err(msg) => panic!("Error! {}", msg),
+                            };
+                            assert_eq!(success, true);
+                            println!("A signature verified: {}", success);
+
+                            // 10. A computes the ed25519 signature: sig = signQa(Pbe || Pae)
+                            println!(
+                                ">>>>  10. A computes the ed25519 signature: sig = signQa(Pbe || Pae)"
+                            );
+                            let mut sig: [u8; SIGN_LEN] = [0; SIGN_LEN];
+                            assert_eq!(
+                                hacl::ed25519_sign(
+                                    &mut sig,
+                                    &sts.my_private_key.privkey,
+                                    pbe_pae.as_slice(),
+                                ),
+                                Ok(())
+                            );
+
+                            // 11. A computes and sends the message Ekey=Ka,IV=Sa||zero(sig)
+                            println!(
+                                ">>>>  11. A computes and sends the message Ekey=Ka,IV=Sa||zero(sig)"
+                            );
+                            let mut mac: [u8; MAC_LEN] = [0; MAC_LEN];
+                            let aad = vec![];
+                            let mut ciphertext: [u8; SIGN_LEN] = [0; SIGN_LEN];
+
+                            let success = match hacl::chacha20poly1305_aead_encrypt(
+                                &mut ciphertext,
+                                &mut mac,
+                                &sig,
+                                &aad,
+                                &sts.my_symmetric_key.key,
+                                &sts.my_symmetric_key.nonce,
+                            ) {
+                                Ok(val) => val,
+                                Err(msg) => panic!("Error! {}", msg),
+                            };
+                            assert_eq!(success, true);
+
+                            // send the message
+                            // create a new message
+                            let mut msg3 = dictionary
+                                .find_msg_by_name(String::from("KEY_EXCHANGE_GCS").as_ref())
+                                .unwrap();
+
+                            // lets build the buffer manually (TODO: add proper handlers to pprzlink)
+                            // source=0 (GCS), msg_id, type, signature
+                            let mut msg3_buf: Vec<u8> = vec![
+                                0,
+                                msg3.id,
+                                StsMsgType::SIG as u8,
+                                (SIGN_LEN + MAC_LEN) as u8,
+                            ];
+                            for idx in 0..SIGN_LEN {
+                                msg3_buf.push(ciphertext[idx]);
+                            }
+                            for idx in 0..MAC_LEN {
+                                msg3_buf.push(mac[idx]);
+                            }
+                            msg3.update(&msg3_buf);
+
+                            // get a transort
+                            let mut tx = PprzTransport::new();
+                            tx.construct_pprz_msg(&msg3.to_bytes());
+                            println!("MSG3: {:?}", tx.buf);
+
+                            let len = port.write(&tx.buf)?;
+                            status_report.tx_bytes += len;
+                            status_report.tx_msgs += 1;
+                            if len != tx.buf.len() {
+                                println!(
+                                    "{} Written {} bytes, but the message was {} bytes",
+                                    debug_time.elapsed(),
+                                    len,
+                                    tx.buf.len()
+                                );
+                            }
+                            // set status to crypto ok
+                            sts.stage = StsStage::CryptoOK;
+                        }
+                        _ => {
+                            // ignore other states and log error
+                        }
+                    }
+                    // and continue with `continue;` to skip the rest of the loop
+                    continue;
+                }
+
+                //
+                //  REGULAR COMMUNICATION
+                //
+                // we get here if we decrypted the message sucessfully
+                //println!("msg_id={}", rx.buf[1]);
+
+                status_report.rx_msgs += 1;
+                let name = dictionary
+                    .get_msg_name(PprzMsgClassID::Telemetry, rx.buf[1])
+                    .unwrap();
+                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
+
+                //println!("Found message: {}", msg.name);
+                //println!("Found sender: {}", rx.buf[0]);
+
+                // update message fields with real values
+                msg.update(&rx.buf);
+
+                // check for PONG
+                if msg.name == "PONG" {
+                    // update time
+                    pong_ivy_callback(vec![]);
+                }
+
+                // send the message
+//                println!(
+//                    "{} Received new msg: {}",
+//                    debug_time.elapsed(),
+//                    msg.to_string().unwrap()
+//                );
+                ivyrust::ivy_send_msg(msg.to_string().unwrap());
+            } // end parse byte
+        } // end for idx in 0..len
+
+
+        // update status & send status message if needed
+        if status_report_timer.elapsed() >= status_report_period {
+            report_msg = update_status(report_msg, &mut status_report, status_report_period);
+
+            // reset the timer
+            status_report_timer = Instant::now();
+        }
+
+    } // end-loop
+}
+
+
+
+
 /// Configure port to given settings
 ///
 /// We can specify the device name and the baudrate
 /// The default timeout is zero (non-blocking read/write)
-fn configure_port(mut port: serial::SystemPort,
-                  baud: usize)
-                  -> Result<serial::SystemPort, Box<Error>> {
+fn configure_port(
+    mut port: serial::SystemPort,
+    baud: usize,
+) -> Result<serial::SystemPort, Box<Error>> {
     let baud = serial::core::BaudRate::from_speed(baud);
     let settings = serial::core::PortSettings {
         baud_rate: baud,
@@ -266,307 +963,17 @@ impl RustlinkTime {
     }
 }
 
-/// Main serial thread
-///
-/// Manages reading/writing to/from the serial port `port_name`
-/// at given `baudrate`, and requires a dictionary of messages.
-///
-/// Every SYNC_PERIOD ms it sends SYNC/CHANNEL message and any pending
-/// messages stored in the message queue.
-///
-/// Otherwise reads from serial port, and if receives a new message it sends
-/// it over IVY bus.
-///
-/// If new message from IVY bus is to be send, it saves it to the message queue (FIFO).
-fn thread_scheduler(port_name: OsString,
-                    baudrate: usize,
-                    dictionary: Arc<PprzDictionary>,
-                    status_report_period: u64)
-                    -> Result<(), Box<Error>> {
-    let port = serial::open(&port_name)?;
-    let mut port = match configure_port(port, baudrate) {
-        Ok(port) => port,
-        Err(e) => return Err(e),
-    };
-
-    // initialize variables LINK_REPORT
-    let mut status_report_timer = Instant::now();
-    let status_report_period = Duration::from_millis(status_report_period);
-    let mut report_msg = dictionary
-        .find_msg_by_name(String::from("LINK_REPORT").as_ref())
-        .expect("LINK_REPORT message not found");
-    let mut status_report = RustlinkStatusReport {
-        tx_bytes: 0,
-        rx_bytes: 0,
-        rx_msgs: 0,
-        tx_msgs: 0,
-        last_tx_bytes: 0,
-        last_rx_bytes: 0,
-        last_rx_msgs: 0,
-        last_tx_msgs: 0,
-    };
-
-    // initialize an emty buffer
-    let mut buf = [0; 255]; // still have to manually allocate an array
-    let mut rx = PprzTransport::new();
-
-    // get current time
-    let mut instant = Instant::now();
-
-    // get debug time
-    let debug_time = RustlinkTime { time: Instant::now() };
-
-    // proceed to read messages
-    loop {
-        let this_instant = instant.elapsed();
-        if this_instant >= Duration::from_millis(PERIOD_MS) {
-            //println!("{} Time to send new SYNC/CHANNEL, instant.elapsed={}", debug_time.elapsed(), this_instant.as_secs() as f64 + this_instant.subsec_nanos() as f64 * 1e-9);
-
-            // update time
-            instant = Instant::now();
-
-            // we need to send SYNC: get sync message
-            let mut sync_msg = dictionary
-                .find_msg_by_name(String::from("SYNC_CHANNEL").as_ref())
-                .expect("SYNC_CHANNEL not found");
-
-            // look at how many messages are in the queue
-            let mut len = 0;
-            let mut msg_buf: Vec<PprzTransport> = vec![];
-
-            // try lock and don't wait
-            let mut lock = MSG_QUEUE.lock();
-            if let Ok(ref mut msg_queue) = lock {
-                //println!("{} MSG_queue locked", debug_time.elapsed());
-                while !msg_queue.is_empty() && (len <= MAX_MSG_SIZE) {
-                    // get a message from the front of the queue
-                    let new_msg = msg_queue.pop_front().unwrap();
-
-                    // get a transort
-                    let mut tx = PprzTransport::new();
-                    let name = new_msg.to_string().unwrap();
-
-                    // construct a message from the transport
-                    tx.construct_pprz_msg(&new_msg.to_bytes());
-
-                    // validate message length
-                    if (len + tx.get_message_length()) <= MAX_MSG_SIZE {
-                        // increment lenght
-                        len += tx.get_message_length();
-                        // we have room for the message, so push it in
-                        println!("{} Add {} message", debug_time.elapsed(), name);
-                        msg_buf.push(tx);
-                    } else {
-                        // we should abort counting here
-                        //println!("{} too many messages, breaking from len={}", debug_time.elapsed(),len);
-                        break;
-                    }
-                    //println!("{} Scheduler: Message queue len: {}", debug_time.elapsed(), msg_queue.len());
-                }
-            }
-
-            // calculate the field value
-            let mut delay = PERIOD_MS as f32 -
-                            ((CHANNEL_LEN as f32 + len as f32) as f32 * MS_PER_BYTE);
-            if len >= MSG_ONE_WAY_THRESHOLD {
-                // only one delay (rx only)
-                delay = delay - PROTECTION_PERIOD as f32 * 1.0;
-            } else {
-                // double protection period (tx/rx)
-                delay = delay - PROTECTION_PERIOD as f32 * 2.0;
-            }
-
-            // Set delay value
-            sync_msg.fields[0].value = PprzMsgBaseType::Uint8(delay as u8);
-
-            // Send CHANNEL message
-            let mut tx = PprzTransport::new();
-            tx.construct_pprz_msg(&sync_msg.to_bytes());
-            //println!("TX buf: {:?}",tx.buf);
-            let _ = port.write(&tx.buf)?;
-            println!(" ");
-            println!("{} Sending SYNC/CHANNEL message, delay of {} ms",
-                     debug_time.elapsed(),
-                     delay);
-
-            // Send our messages
-            for msg_to_send in msg_buf {
-                println!("{} Sending msg ID = {}",
-                         debug_time.elapsed(),
-                         msg_to_send.buf[3]);
-                let len = port.write(&msg_to_send.buf)?;
-                //println!("{} Sent {} bytes", debug_time.elapsed(), len);
-                status_report.tx_bytes += len;
-                status_report.tx_msgs += 1;
-                if len != msg_to_send.buf.len() {
-                    println!("{} Written {} bytes, but the message was {} bytes",
-                             debug_time.elapsed(),
-                             len,
-                             msg_to_send.buf.len());
-                }
-            }
-            println!("{} Done sending messages", debug_time.elapsed());
-            println!(" ");
-
-        } // end if instant.elapsed() >= Duration::from_millis(PERIOD_MS) {
-
-        // read data (no timeout right now)
-        let len = match port.read(&mut buf[..]) {
-            Ok(len) => len,
-            Err(_) => continue,
-        };
-        status_report.rx_bytes += len;
-
-        // parse received data and optionally send a message
-        for idx in 0..len {
-            if rx.parse_byte(buf[idx]) {
-                // TODO: here would we handle encryption
-                // handle_crypto();
-                let data_len = rx.buf.len();
-                println!("payload len ={}", data_len);
-                
-                println!("rx.buf=");
-                print_array(&rx.buf); 
-                
-                let mut nonce: [u8;12] = [0;12];
-                for i in 0..3 {
-	                nonce[i] = rx.buf.get(i).unwrap().clone();	
-                }
-                println!("nonce=");
-                print_array(&nonce);
-                
-                let mut ciphertext: [u8;256] = [0;256];
-                let mut mlen = 0;
-                for i in 0..data_len-20 {
-                	let idx = 4 + i;
-                	mlen = mlen + 1;
-                	ciphertext[i] = rx.buf.get(idx).unwrap().clone();
-                }
-                println!("ciphertext=");
-                print_array(&ciphertext[0..mlen]);
-                
-                let mut mac: [u8;16] = [0;16];
-                for i in 0 .. 16 {
-                	let idx = data_len-16+i;
-                	mac[i] = rx.buf.get(idx).unwrap().clone();
-                }
-                println!("mac=");
-                print_array(&mac);
-                
-                println!("mlen={}",mlen);
-                
-                let message: [u8;256] = [0;256];
-                println!("message before decryption=");
-                print_array(&message[0..mlen]); 
-                
-                let l = hacl::decrypt(&ciphertext, &mac, &message, mlen as u32, &KEY, &nonce);
-                println!("Decryption operation: {}, mlen={}",l,mlen);
-
-				println!("message after decryption=");
-                print_array(&message[0..mlen]);
-
-				if l == 1 {
-					println!("Decryption failed");
-					continue;
-				} else {
-					println!("Decryption OK");
-					for i in 0..mlen as usize {
-						rx.buf[i] = message[i];
-					}
-				}
-				
-				println!("rx.buf=");
-                print_array(&rx.buf); 
-                
-                println!("msg_id={}",rx.buf[1]);
-				
-                status_report.rx_msgs += 1;
-                let name = dictionary
-                    .get_msg_name(PprzMsgClassID::Telemetry, rx.buf[1])
-                    .unwrap();
-                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
-                
-                println!("Found message: {}", msg.name);
-                println!("Found sender: {}", rx.buf[0]);
-
-                // update message fields with real values
-                msg.update(&rx.buf);
-
-                // check for PONG
-                if msg.name == "PONG" {
-                    // update time
-                    pong_ivy_callback(vec![]);
-                }
-
-                // send the message
-                println!("{} Received new msg: {}",
-                         debug_time.elapsed(),
-                         msg.to_string().unwrap());
-                ivyrust::ivy_send_msg(msg.to_string().unwrap());
-            } // end parse byte
-        } // end for idx in 0..len
 
 
-        // update status & send status message if needed
-        if status_report_timer.elapsed() >= status_report_period {
-            report_msg = update_status(report_msg, &mut status_report, status_report_period);
-
-            // reset the timer
-            status_report_timer = Instant::now();
-        }
-
-    } // end-loop
-}
-
-/*
-let send_status_msg =
-  let start = Unix.gettimeofday () in
-  fun () ->
-    Hashtbl.iter (fun ac_id status ->
-      let dt = float !status_msg_period /. 1000. in
-      let t = int_of_float (Unix.gettimeofday () -. start) in
-      let byte_rate = float (status.rx_byte - status.last_rx_byte) /. dt
-      and msg_rate = float (status.rx_msg - status.last_rx_msg) /. dt in
-      status.last_rx_msg <- status.rx_msg;
-      status.last_rx_byte <- status.rx_byte;
-      let vs = ["ac_id", PprzLink.String (string_of_int ac_id);
-                "link_id", PprzLink.String (string_of_int !link_id);
-                "run_time", PprzLink.Int64 (Int64.of_int t);
-                "rx_lost_time", PprzLink.Int64 (Int64.of_int (status.ms_since_last_msg / 1000));
-                "rx_bytes", PprzLink.Int64 (Int64.of_int status.rx_byte);
-                "rx_msgs", PprzLink.Int64 (Int64.of_int status.rx_msg);
-                "rx_err", PprzLink.Int64 (Int64.of_int status.rx_err);
-                "rx_bytes_rate", PprzLink.Float byte_rate;
-                "rx_msgs_rate", PprzLink.Float msg_rate;
-                "tx_msgs", PprzLink.Int64 (Int64.of_int status.tx_msg);
-                "ping_time", PprzLink.Float (1000. *. (status.last_pong -. status.last_ping))
-               ] in
-      send_ground_over_ivy "link" "LINK_REPORT" vs)
-      statuss
-      
-          <message name="LINK_REPORT" id="36">
-      <description>Datalink status reported by Link for the Server</description>
-      <field name="ac_id" type="string"/>
-      <field name="link_id" type="string"/>
-      <field name="run_time" type="uint32" unit="s"/>
-      <field name="rx_lost_time" type="uint32" unit="s"/>
-      <field name="rx_bytes" type="uint32"/>
-      <field name="rx_msgs" type="uint32"/>
-      <field name="rx_err" type="uint32"/>
-      <field name="rx_bytes_rate" type="float" format="%.1f" unit="bytes/s"/>
-      <field name="rx_msgs_rate" type="float" format="%.1f" unit="msgs/s"/>
-      <field name="tx_msgs" type="uint32"/>
-      <field name="ping_time" type="float" format="%.2f" unit="ms"/>
-    </message>
-*/
 /// Update status is called every time we get new data, we just store the new values
-fn update_status(mut msg: PprzMessage,
-                 status_report: &mut RustlinkStatusReport,
-                 status_msg_period: Duration)
-                 -> PprzMessage {
+fn update_status(
+    mut msg: PprzMessage,
+    status_report: &mut RustlinkStatusReport,
+    status_msg_period: Duration,
+) -> PprzMessage {
 
     let dt_seconds = status_msg_period.as_secs() as f32 +
-                     (status_msg_period.subsec_nanos() as f32 * 1e-9);
+        (status_msg_period.subsec_nanos() as f32 * 1e-9);
 
     for field in &mut msg.fields {
         match field.name.as_ref() {
@@ -605,12 +1012,12 @@ fn update_status(mut msg: PprzMessage,
             }
             "rx_bytes_rate" => {
                 let byte_rate = (status_report.rx_bytes - status_report.last_rx_bytes) as f32 /
-                                dt_seconds;
+                    dt_seconds;
                 field.value = PprzMsgBaseType::Float(byte_rate);
             }
             "rx_msgs_rate" => {
                 let byte_rate = (status_report.rx_msgs - status_report.last_rx_msgs) as f32 /
-                                dt_seconds;
+                    dt_seconds;
                 field.value = PprzMsgBaseType::Float(byte_rate);
             }
             "tx_msgs" => {
@@ -654,42 +1061,59 @@ fn main() {
     // Construct command line arguments
     let matches = App::new("Rustlink for Paparazzi")
         .version("0.1")
-        .arg(Arg::with_name("ivy_bus")
-                 .short("b")
-                 .value_name("ivy_bus")
-                 .help("Default is 127.255.255.255:2010")
-                 .takes_value(true))
-        .arg(Arg::with_name("port")
-                 .short("d")
-                 .value_name("port")
-                 .help("Default is /dev/ttyUSB0")
-                 .takes_value(true))
-        .arg(Arg::with_name("baudrate")
-                 .short("s")
-                 .value_name("baudrate")
-                 .help("Default is 9600")
-                 .takes_value(true))
-        .arg(Arg::with_name("status_period")
-                 .short("t")
-                 .long("status_period")
-                 .value_name("status_period")
-                 .help("Sets the period (in ms) of the LINK_REPORT status message. Default is 1000")
-                 .takes_value(true))
-        .arg(Arg::with_name("ping_period")
-                 .short("n")
-                 .long("ping_period")
-                 .value_name("ping_period")
-                 .help("Sets the period (in ms) of the PING message sent to aircrafs. Default is 5000")
-                 .takes_value(true))
-        .arg(Arg::with_name("sender")
-                 .long("sender")
-                 .help("Use Rustlink to simulate the autopilot")
-                 .takes_value(false))
+        .arg(
+            Arg::with_name("ivy_bus")
+                .short("b")
+                .value_name("ivy_bus")
+                .help("Default is 127.255.255.255:2010")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("port")
+                .short("d")
+                .value_name("port")
+                .help("Default is /dev/ttyUSB0")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("baudrate")
+                .short("s")
+                .value_name("baudrate")
+                .help("Default is 9600")
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("status_period")
+                .short("t")
+                .long("status_period")
+                .value_name("status_period")
+                .help(
+                    "Sets the period (in ms) of the LINK_REPORT status message. Default is 1000",
+                )
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("ping_period")
+                .short("n")
+                .long("ping_period")
+                .value_name("ping_period")
+                .help(
+                    "Sets the period (in ms) of the PING message sent to aircrafs. Default is 5000",
+                )
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("ac_name")
+                .short("a")
+                .value_name("aircraft name")
+                .help("Name of the aircraft (to find keys_gcs.h)")
+                .takes_value(true),
+        )
         .get_matches();
 
-    let ivy_bus = matches
-        .value_of("ivy_bus")
-        .unwrap_or("127.255.255.255:2010");
+    let ivy_bus = matches.value_of("ivy_bus").unwrap_or(
+        "127.255.255.255:2010",
+    );
     let ivy_bus = String::from(ivy_bus);
     println!("Value for ivy_bus: {}", ivy_bus);
 
@@ -698,9 +1122,9 @@ fn main() {
     println!("Value for ping_period: {}", ping_period);
 
     let status_period = matches.value_of("status_period").unwrap_or("5000");
-    let status_period = status_period
-        .parse::<u64>()
-        .expect("Incorrect status period");
+    let status_period = status_period.parse::<u64>().expect(
+        "Incorrect status period",
+    );
     println!("Value for status_period: {}", status_period);
 
     let baudrate = matches.value_of("baudrate").unwrap_or("9600");
@@ -711,10 +1135,8 @@ fn main() {
     let port = OsString::from(port);
     println!("Value for port: {:?}", port);
 
-    let as_sender = match matches.occurrences_of("sender") {
-        0 => false,
-        _ => true,
-    };
+    let ac_name = matches.value_of("ac_name").expect("AC name not found");
+    println!("Value for aircraft name: {:?}", ac_name);
 
     let pprz_root = match env::var("PAPARAZZI_SRC") {
         Ok(var) => var,
@@ -726,10 +1148,91 @@ fn main() {
 
     // spin the main IVY loop
     let _ = thread::spawn(move || if let Err(e) = thread_ivy_main(ivy_bus) {
-                              println!("Error starting ivy thread: {}", e);
-                          } else {
-                              println!("Ivy thread finished");
-                          });
+        println!("Error starting ivy thread: {}", e);
+    } else {
+        println!("Ivy thread finished");
+    });
+
+
+    // open the GCS keys file
+    let keys_file = pprz_root.clone() + "/var/aircrafts/" + ac_name + "/ap/generated/keys_gcs.h";
+    let file = File::open(keys_file).unwrap();
+    let file = BufReader::new(&file);
+
+    let pattern_my_pubkey = String::from("#define GCS_PUBLIC") + " .*";
+    let re_p_a = Regex::new(&pattern_my_pubkey).unwrap();
+    let pattern_my_privkey = String::from("#define GCS_PRIVATE") + " .*";
+    let re_q_a = Regex::new(&pattern_my_privkey).unwrap();
+    let pattern_their_pubkey = String::from("#define UAV_PUBLIC") + " .*";
+    let re_p_b = Regex::new(&pattern_their_pubkey).unwrap();
+
+    // initialize asymetric keys
+    let mut p_a: [u8; 32] = [0; 32];
+    let mut q_a: [u8; 32] = [0; 32];
+    let mut p_b: [u8; 32] = [0; 32];
+
+    for (_, line) in file.lines().enumerate() {
+        let line = line.unwrap();
+        if re_p_a.is_match(&line) {
+            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+            let data = data.pop().unwrap();
+            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+
+            let mut idx = 0;
+            for value in data {
+                match value.parse::<u8>() {
+                    Ok(v) => {
+                        p_a[idx] = v;
+                        idx = idx + 1;
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                }
+            }
+            continue;
+        }
+
+        let mut idx = 0;
+        if re_q_a.is_match(&line) {
+            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+            let data = data.pop().unwrap();
+            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+
+            for value in data {
+                match value.parse::<u8>() {
+                    Ok(v) => {
+                        q_a[idx] = v;
+                        idx = idx + 1;
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                }
+            }
+            continue;
+        }
+
+        let mut idx = 0;
+        if re_p_b.is_match(&line) {
+            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+            let data = data.pop().unwrap();
+            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+
+            for value in data {
+                match value.parse::<u8>() {
+                    Ok(v) => {
+                        p_b[idx] = v;
+                        idx = idx + 1;
+                    }
+                    Err(_) => {
+                        continue;
+                    }
+                }
+            }
+            continue;
+        }
+    }
 
     // prepare the dictionary
     let xml_file = pprz_root + "/sw/ext/pprzlink/message_definitions/v1.0/messages.xml";
@@ -745,322 +1248,31 @@ fn main() {
     let dictionary = Arc::new(dictionary);
     let dictionary_scheduler = Arc::clone(&dictionary);
     let dictionary_ping = Arc::clone(&dictionary);
-
-    if !as_sender {
-        // spin the serial loop
-        let t = thread::spawn(move || if let Err(e) = thread_scheduler(port,
-                                                                       baudrate,
-                                                                       dictionary_scheduler,
-                                                                       status_period) {
-                                  println!("Error starting serial thread: {}", e);
-                              } else {
-                                  println!("Serial thread finished");
-                              });
-
-
-
-        // ping periodic
-        let _ = thread::spawn(move || thread_ping(ping_period, dictionary_ping));
-
-        // bind global callback
-        let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
-
-        // close
-        t.join().expect("Error waiting for serial thread to finish");
-
+    // spin the serial loop
+    let t = thread::spawn(move || if let Err(e) = thread_main(
+        port,
+        baudrate,
+        dictionary_scheduler,
+        status_period,
+        p_a,
+        q_a,
+        p_b,
+    )
+    {
+        println!("Error starting main thread: {}", e);
     } else {
-        // spin the receiving thread
-        // spin the serial loop
-        let t = thread::spawn(move || if let Err(e) = thread_sender(port,
-                                                                    baudrate,
-                                                                    dictionary_scheduler) {
-                                  println!("Error starting serial thread: {}", e);
-                              } else {
-                                  println!("Serial thread finished");
-                              });
+        println!("Main thread finished");
+    });
 
-        let _ = thread::spawn(|| thread_message_generator(15.0, dictionary_ping));
+    // ping periodic
+    let _ = thread::spawn(move || thread_ping(ping_period, dictionary_ping));
 
-        t.join().expect("Error waiting for sender thread to finish");
+    // bind global callback
+    let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
 
-    }
+    // close
+    t.join().expect("Error waiting for serial thread to finish");
 
     // end program
     ivyrust::ivy_stop();
 }
-
-
-/// This thread randomly generates messages
-///
-/// We only specify how long our vector of random messages at random intervals should be
-/*
-      <message name="AUTOPILOT_VERSION"   period="11.1"/>
-      <message name="ALIVE"               period="5.1"/>
-      <message name="GPS_LLA"             period="0.25"/>
-      <message name="NAVIGATION"          period="1."/>
-      <message name="ATTITUDE"            period="0.1"/>
-      <message name="ESTIMATOR"           period="0.5"/>
-      <message name="WP_MOVED"            period="0.5"/>
-      <message name="CIRCLE"              period="1.05"/>
-      <message name="DESIRED"             period="0.2"/>
-      <message name="BAT"                 period="1.1"/>
-      <message name="SEGMENT"             period="1.2"/>
-      <message name="NAVIGATION_REF"      period="9."/>
-      <message name="PPRZ_MODE"           period="4.9"/>
-      <message name="SETTINGS"            period="5."/>
-      <message name="DATALINK_REPORT"     period="5.1"/>
-      <message name="DL_VALUE"            period="1.5"/>
-      <message name="IR_SENSORS"          period="1.2"/>
-      <message name="SURVEY"              period="2.1"/>
-      <message name="COMMANDS"            period="1"/>
-      <message name="FBW_STATUS"          period="2"/>
-      <message name="VECTORNAV_INFO"      period="1.0"/>
-      <message name="COMMANDS"            period="5"/>
-      <message name="FBW_STATUS"          period="2"/>
-      <message name="ACTUATORS"           period="5"/> <!-- For trimming -->
-*/
-/// Scale divides the period, so higher the scale, the faster the messages
-fn thread_message_generator(scale: f32, dictionary: Arc<PprzDictionary>) {
-    let mut periods = vec![11.1, 5.1, 0.25, 1.0, 0.1, 0.5, 0.5, 1.05, 0.2, 1.1, 1.2, 9.0, 4.9,
-                           5.0, 5.1, 1.5, 1.2, 2.1, 1.0, 2.0, 1.0, 5.0, 2.0, 5.0];
-    let msg_names = vec!["AUTOPILOT_VERSION",
-                         "ALIVE",
-                         "GPS_LLA",
-                         "NAVIGATION",
-                         "ATTITUDE",
-                         "ESTIMATOR",
-                         "WP_MOVED",
-                         "CIRCLE",
-                         "DESIRED",
-                         "BAT",
-                         "SEGMENT",
-                         "NAVIGATION_REF",
-                         "PPRZ_MODE",
-                         "SETTINGS",
-                         "DATALINK_REPORT",
-                         "DL_VALUE",
-                         "IR_SENSORS",
-                         "SURVEY",
-                         "COMMANDS",
-                         "FBW_STATUS",
-                         "VECTORNAV_INFO",
-                         "COMMANDS",
-                         "FBW_STATUS",
-                         "ACTUATORS"];
-
-    // init messages
-    let mut msgs: Vec<PprzMessage> = vec![];
-    for name in msg_names {
-        let mut msg = dictionary.find_msg_by_name(name).unwrap();
-        msg.source = 1;
-        msgs.push(msg);
-    }
-
-    let mut handles = vec![];
-
-    while !msgs.is_empty() {
-        let msg = msgs.pop().unwrap();
-        let period = ((periods.pop().unwrap() * 1000.0) / scale) as u64;
-
-        let handle = thread::spawn(move || {
-            thread::sleep(time::Duration::from_millis(period));
-            {
-                let mut msg_lock = MSG_QUEUE.lock();
-                if let Ok(ref mut msg_vector) = msg_lock {
-                    println!("Adding to the queue MSG {}", msg.name);
-                    // append at the end of vector
-                    msg_vector.push_back(msg);
-                }
-            }
-
-        });
-        handles.push(handle);
-    }
-
-
-
-    for handle in handles {
-        handle.join().unwrap();
-    }
-}
-
-/// We need a state macgine
-enum RustlinkAutopiloStatus {
-    WaitingForSyncChannel,
-    WaitingForProtectionInterval,
-    Transmitting,
-}
-
-
-/// This thread simulates being an autopilot
-///
-/// Waits for the SYNC/CHANNEL message, and once received, it sends appropriate data on the ground
-/// The messages are randomly generated for now, we just have to handle the AC_ID (in this case hardcoded to 1)
-///
-fn thread_sender(port_name: OsString,
-                 baudrate: usize,
-                 dictionary: Arc<PprzDictionary>)
-                 -> Result<(), Box<Error>> {
-    let port = serial::open(&port_name)?;
-    let mut port = match configure_port(port, baudrate) {
-        Ok(port) => port,
-        Err(e) => return Err(e),
-    };
-
-    // initialize an emty buffer
-    let mut buf = [0; 255]; // still have to manually allocate an array
-    let mut rx = PprzTransport::new();
-
-    // Scheduling variables
-    let mut ap_status = RustlinkAutopiloStatus::WaitingForSyncChannel;
-    let mut delay = 0;
-    let mut rx_delay = Instant::now();
-    let mut t_2 = Instant::now();
-
-    // get debug time
-    let debug_time = RustlinkTime { time: Instant::now() };
-
-
-    // proceed to read messages
-    loop {
-        // we got SYNC/CHANNEL value & the protection interval ended
-        if delay != 0 {
-            // TX variables
-            let mut len = 0;
-            let mut msg_buf: Vec<PprzTransport> = vec![];
-
-            // we got delay, lets match the cases
-            match ap_status {
-                RustlinkAutopiloStatus::WaitingForSyncChannel => {
-                    // do nothing
-                }
-                RustlinkAutopiloStatus::WaitingForProtectionInterval => {
-                    // check if the inerval passed
-                    if rx_delay.elapsed() >= Duration::from_millis(PROTECTION_PERIOD) {
-                        // start transmitting
-                        ap_status = RustlinkAutopiloStatus::Transmitting;
-                        // star counting time
-                        t_2 = Instant::now();
-
-                        println!("{} Protection interval ended!", debug_time.elapsed());
-                    }
-                }
-                RustlinkAutopiloStatus::Transmitting => {
-                    // transmit data
-                    if t_2.elapsed() > Duration::from_millis(delay as u64) {
-                        // reset the counter
-                        delay = 0;
-                        ap_status = RustlinkAutopiloStatus::WaitingForSyncChannel;
-                        println!("{} Transmitting interval ended", debug_time.elapsed());
-                    } else {
-                        // send data
-                        // look at how many messages are in the queue
-
-                        // calculate max message size we are allowed to send
-                        // TODO: update delay in case we don't have mutex right away
-                        let max_len = (delay as f32 / MS_PER_BYTE) as u8;
-                        println!("{} We have windown of {} bytes to send",
-                                 debug_time.elapsed(),
-                                 max_len);
-
-                        // try lock and don't wait
-                        let mut lock = MSG_QUEUE.lock();
-                        if let Ok(ref mut msg_queue) = lock {
-                            while !msg_queue.is_empty() && (len <= max_len) {
-                                // get a message from the front of the queue
-                                let new_msg = msg_queue.pop_front().unwrap();
-
-                                // get a transort
-                                let mut tx = PprzTransport::new();
-
-                                // construct a message from the transport
-                                tx.construct_pprz_msg(&new_msg.to_bytes());
-
-                                // validate message length
-                                if (len + tx.get_message_length() as u8) <= max_len {
-                                    // increment lenght
-                                    len += tx.get_message_length() as u8;
-                                    // we have room for the message, so push it in
-                                    msg_buf.push(tx);
-                                } else {
-                                    // we should abort counting here
-                                    println!("{} too many messages, breaking from len={}",
-                                             debug_time.elapsed(),
-                                             len);
-                                    break;
-                                }
-                                println!("{} Scheduler: Message queue len: {}",
-                                         debug_time.elapsed(),
-                                         msg_queue.len());
-                            } // end while lock on msg_queue
-                        } // end mutex lock
-                    } // end else
-                } // end Transmitting status
-            } // end match status
-
-
-            // Send our messages
-            for msg_to_send in msg_buf {
-                let len = port.write(&msg_to_send.buf)?;
-                if len != msg_to_send.buf.len() {
-                    println!("{} Written {} bytes, but the message was {} bytes",
-                             debug_time.elapsed(),
-                             len,
-                             msg_to_send.buf.len());
-                }
-            } // end sending messages
-        } // end delay != 0
-
-        // read data (no timeout right now)
-        let len = match port.read(&mut buf[..]) {
-            Ok(len) => len,
-            Err(_) => continue,
-        };
-
-
-        // parse received data, we are waiting for CHANNEL message
-        for idx in 0..len {
-            if rx.parse_byte(buf[idx]) {
-                println!("{} Got new message", debug_time.elapsed());
-                // update the protection interval
-                rx_delay = Instant::now();
-
-                let name = dictionary
-                    .get_msg_name(PprzMsgClassID::Datalink, rx.buf[1])
-                    .unwrap();
-                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
-
-                // update message fields with real values
-                msg.update(&rx.buf);
-
-                // check for CHANNEL
-                if msg.name == "CHANNEL" {
-                    println!("{} Got CHANNEL", debug_time.elapsed());
-
-                    // upodate the delay
-                    if let PprzMsgBaseType::Uint8(v) = msg.fields[0].value {
-                        delay = v;
-                        println!("{} Updating delay to {} ms", debug_time.elapsed(), delay);
-                    }
-
-                    // now we can move on an wait for the protection interval to end
-                    ap_status = RustlinkAutopiloStatus::WaitingForProtectionInterval
-                } // end channel
-
-                if msg.name == "PING" {
-                    // send PONG as the first thing
-                    let mut msg = dictionary.find_msg_by_name("PONG").expect("PONG not found");
-                    msg.source = 1;
-                    {
-                        let mut msg_lock = MSG_QUEUE.lock();
-                        if let Ok(ref mut msg_vector) = msg_lock {
-                            println!("{} Adding MSG {}", debug_time.elapsed(), msg.name);
-                            // append at the end of vector
-                            msg_vector.push_back(msg);
-                        }
-                    }
-                }
-            } // end parse byte
-        } // end for idx in 0..len
-    } // end-loop
-} // end thread_sender

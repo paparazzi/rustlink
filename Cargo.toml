@@ -1,12 +1,15 @@
 [package]
 name = "rustlink"
-version = "0.1.0"
-authors = ["Michal Podhradsky <michal.podhradsky@galois.com>"]
+version = "0.2.0"
+authors = ["Michal Podhradsky <mpodhradsky@galois.com>"]
 
 [dependencies]
-pprzlink = "0.3.1"
+#pprzlink = "0.3.1"
+pprzlink = { path = "/home/michal/Workspace/rust_projects/pprzlink_rust" }
 ivyrust = "0.1.1"
-serial="0.4"
-regex = "0.2"
+clap = "2.27.1"
 lazy_static = "0.2"
-clap = "2.26.0"
+regex = "0.2"
+serial="0.4"
+hacl = { path = "/home/michal/Workspace/rust_projects/rusthacl" }
+rand = "0.3.18"
