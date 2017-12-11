@@ -6,7 +6,7 @@ extern crate serial;
 extern crate ivyrust;
 extern crate pprzlink;
 extern crate clap;
-extern crate hacl;
+extern crate rusthacl;
 extern crate rand;
 
 use clap::{Arg, App};
@@ -177,7 +177,7 @@ impl GecSts {
     }
 }
 
-
+#[allow(dead_code)]
 fn print_array(b: &[u8]) {
     print!("data=[");
     for i in b {
@@ -297,7 +297,7 @@ fn thread_main(
                     let mut mac = vec![0; MAC_LEN];
                     let aad = vec![];
 
-                    let success = match hacl::chacha20poly1305_aead_encrypt(
+                    let success = match rusthacl::chacha20poly1305_aead_encrypt(
                         ciphertext.as_mut_slice(),
                         mac.as_mut_slice(),
                         &plaintext,
@@ -357,7 +357,7 @@ fn thread_main(
 
                     rng.fill_bytes(&mut q_ae);
 
-                    hacl::curve25519_crypto_scalarmult(&mut p_ae, &q_ae, &basepoint).unwrap();
+                    rusthacl::curve25519_crypto_scalarmult(&mut p_ae, &q_ae, &basepoint).unwrap();
 
                     let my_ephemeral = GecPrivKey {
                         privkey: q_ae,
@@ -480,7 +480,7 @@ fn thread_main(
 
                     let mut pt: Vec<u8> = vec![0; clen - CRYPTO_OVERHEAD];
                     let aad = vec![];
-                    let sucess = match hacl::chacha20poly1305_aead_decrypt(
+                    let sucess = match rusthacl::chacha20poly1305_aead_decrypt(
                         pt.as_mut_slice(), // plaintext
                         &rx.buf[clen - MAC_LEN..clen], // mac
                         &rx.buf[COUNTER_LEN..clen - MAC_LEN], // ciphertext
@@ -550,7 +550,7 @@ fn thread_main(
                             // 7. A computes the shared secret: z = scalar_multiplication(Qae, Pbe)
                             let mut z: [u8; KEY_LEN] = [0; KEY_LEN];
                             // Curve25519_crypto_scalarmult(z, sts.myPrivateKeyEphemeral.priv, sts.theirPublicKeyEphemeral.pub);
-                            hacl::curve25519_crypto_scalarmult(
+                            rusthacl::curve25519_crypto_scalarmult(
                                 &mut z,
                                 &sts.my_private_ephemeral.privkey,
                                 &p_be,
@@ -562,7 +562,7 @@ fn thread_main(
                             let mut input = z.to_vec();
                             input.push(StsParty::Initiator as u8);
                             assert_eq!(
-                                hacl::sha2_512_hash(ka_sa.as_mut_slice(), input.as_slice()),
+                                rusthacl::sha2_512_hash(ka_sa.as_mut_slice(), input.as_slice()),
                                 Ok(())
                             );
                             input.pop();
@@ -579,7 +579,7 @@ fn thread_main(
                             let mut kb_sb = vec![0; 64];
                             input.push(StsParty::Responder as u8);
                             assert_eq!(
-                                hacl::sha2_512_hash(kb_sb.as_mut_slice(), input.as_slice()),
+                                rusthacl::sha2_512_hash(kb_sb.as_mut_slice(), input.as_slice()),
                                 Ok(())
                             );
                             // update their symmetric key
@@ -595,7 +595,7 @@ fn thread_main(
                             // Pbe || Ekey=Kb,IV=Sb||zero(sig)
                             let mut sig = [0; SIGN_LEN];
                             let aad = vec![];
-                            let success = match hacl::chacha20poly1305_aead_decrypt(
+                            let success = match rusthacl::chacha20poly1305_aead_decrypt(
                                 &mut sig,
                                 mac,
                                 encrypted_sign,
@@ -613,7 +613,7 @@ fn thread_main(
                             pbe_pae.extend_from_slice(&sts.their_public_ephemeral.pubkey); // p_be
                             pbe_pae.extend_from_slice(&sts.my_private_ephemeral.pubkey); // p_ae
 
-                            let success = match hacl::ed25519_verify(
+                            let success = match rusthacl::ed25519_verify(
                                 &sts.their_public_key.pubkey,
                                 &pbe_pae,
                                 &sig,
@@ -630,7 +630,7 @@ fn thread_main(
                             );
                             let mut sig: [u8; SIGN_LEN] = [0; SIGN_LEN];
                             assert_eq!(
-                                hacl::ed25519_sign(
+                                rusthacl::ed25519_sign(
                                     &mut sig,
                                     &sts.my_private_key.privkey,
                                     pbe_pae.as_slice(),
@@ -646,7 +646,7 @@ fn thread_main(
                             let aad = vec![];
                             let mut ciphertext: [u8; SIGN_LEN] = [0; SIGN_LEN];
 
-                            let success = match hacl::chacha20poly1305_aead_encrypt(
+                            let success = match rusthacl::chacha20poly1305_aead_encrypt(
                                 &mut ciphertext,
                                 &mut mac,
                                 &sig,
