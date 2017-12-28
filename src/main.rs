@@ -418,7 +418,7 @@ fn thread_main(
             Err(_) => continue,
         };
         status_report.rx_bytes += len;
-        //println!("received {} bytes", len);
+        println!("received {} bytes", len);
 
         // parse received data and optionally send a message
         // spprz_check_and_parse()
