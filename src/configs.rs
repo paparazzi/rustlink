@@ -1,15 +1,40 @@
 extern crate clap;
 
 use comms::*;
-
 use self::clap::{Arg, App};
+
 use std::env;
+
 use std::sync::Arc;
-use pprzlink::parser::PprzProtocolVersion;
+use std::sync::Mutex;
+
 use std::ffi::OsString;
 
+use std::fs::File;
 
-pub fn init_and_configure() -> Arc<LinkConfig> {
+use pprzlink::parser::{PprzProtocolVersion,PprzDictionary,PprzMessage,PprzMsgBaseType,build_dictionary};
+
+use std::collections::VecDeque;
+
+use std::time::{Instant, Duration};
+
+
+
+/// Initialize the message queue
+pub fn link_build_msg_queue() -> Arc<Mutex<VecDeque<PprzMessage>>> {
+	Arc::new(Mutex::new(VecDeque::new()))
+}
+
+/// PprzDictionary is always borrowed immutably, no need for a mutex
+pub fn link_build_dictionary(config: Arc<LinkConfig>) -> Arc<PprzDictionary> {
+	// construct a dictionary
+	let xml_file = config.pprz_root.clone() + "/sw/ext/pprzlink/message_definitions/v1.0/messages.xml";
+    let file = File::open(xml_file).unwrap();
+    Arc::new(build_dictionary(file,config.pprzlink_version))
+}
+
+/// Take command line arguments and create a LinkCondig struct
+pub fn link_init_and_configure() -> Arc<LinkConfig> {
 	// Construct command line arguments
     let matches = App::new("Rustlink for Paparazzi")
         .version("0.2")
@@ -159,4 +184,118 @@ pub fn init_and_configure() -> Arc<LinkConfig> {
 		ivy_bus: ivy_bus,
 		pprz_root: pprz_root,
 	})
+}
+
+
+/// Status report data
+pub struct RustlinkStatusReport {
+    pub tx_bytes: usize,
+    pub rx_bytes: usize,
+    pub rx_msgs: usize,
+    pub tx_msgs: usize,
+    pub last_tx_bytes: usize,
+    pub last_rx_bytes: usize,
+    pub last_rx_msgs: usize,
+    pub last_tx_msgs: usize,
+}
+
+/// Convenience time structure
+pub struct RustlinkTime {
+    time: Instant,
+}
+
+/// Convenience time functions
+impl RustlinkTime {
+	pub fn new() -> RustlinkTime {
+		RustlinkTime { time: Instant::now() }
+	}
+	
+	/// Resets the time to current time
+	pub fn reset(&mut self) {
+		self.time = Instant::now();
+	}
+	
+	/// Returns elapsed time since creation or reset of the time instant [s]
+    pub fn elapsed(&self) -> f64 {
+        let duration = self.time.elapsed();
+        duration.as_secs() as f64 + duration.subsec_nanos() as f64 * 1e-9
+    }
+}
+
+/// Update status is called at defined period,
+/// update with new data and return a new message to be sent
+pub fn link_update_status(
+    mut msg: PprzMessage,
+    status_report: &mut RustlinkStatusReport,
+    status_msg_period: Duration,
+    ping_time: f64,
+) -> PprzMessage {
+
+    let dt_seconds = status_msg_period.as_secs() as f32 +
+        (status_msg_period.subsec_nanos() as f32 * 1e-9);
+
+    for field in &mut msg.fields {
+        match field.name.as_ref() {
+            "ac_id" => {
+                // this is AC_ID, we can leave blank for now
+                field.value = PprzMsgBaseType::String(String::from("4"));
+            }
+            "link_id" => {
+                // link ID will be -1 unless we explicitly set it
+                field.value = PprzMsgBaseType::String(String::from("-1"));
+
+            }
+            "run_time" => {
+                // increment runtime
+                if let PprzMsgBaseType::Uint32(v) = field.value {
+                    field.value = PprzMsgBaseType::Uint32((v as f32 + dt_seconds) as u32);
+                }
+            }
+            "rx_lost_time" => {
+                if status_report.rx_msgs == status_report.last_rx_msgs {
+                    // no new messages
+                    if let PprzMsgBaseType::Uint32(v) = field.value {
+                        field.value = PprzMsgBaseType::Uint32((v as f32 + dt_seconds) as u32);
+                    }
+                }
+            }
+            "rx_bytes" => {
+                field.value = PprzMsgBaseType::Uint32(status_report.rx_bytes as u32);
+            }
+            "rx_msgs" => {
+                field.value = PprzMsgBaseType::Uint32(status_report.rx_msgs as u32);
+            }
+            "rx_err" => {
+                // we dont really have a way to tell the errors, so keep as zero
+                field.value = PprzMsgBaseType::Uint32(0);
+            }
+            "rx_bytes_rate" => {
+                let byte_rate = (status_report.rx_bytes - status_report.last_rx_bytes) as f32 /
+                    dt_seconds;
+                field.value = PprzMsgBaseType::Float(byte_rate);
+            }
+            "rx_msgs_rate" => {
+                let byte_rate = (status_report.rx_msgs - status_report.last_rx_msgs) as f32 /
+                    dt_seconds;
+                field.value = PprzMsgBaseType::Float(byte_rate);
+            }
+            "tx_msgs" => {
+                field.value = PprzMsgBaseType::Uint32(status_report.tx_msgs as u32);
+            }
+            "ping_time" => {
+                field.value = PprzMsgBaseType::Float(ping_time as f32 * 1000.0); // convert to ms
+            }
+            _ => {
+                println!("update_status: Unknown field");
+            }
+        } // end match
+    } // end for
+
+    // update the report
+    status_report.last_rx_bytes = status_report.rx_bytes;
+    status_report.last_tx_bytes = status_report.tx_bytes;
+    status_report.last_rx_msgs = status_report.rx_msgs;
+    status_report.last_tx_msgs = status_report.tx_msgs;
+
+    msg
 }

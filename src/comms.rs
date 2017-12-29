@@ -1,16 +1,23 @@
-
 extern crate serial;
 
 use std::net::{SocketAddr, UdpSocket};
+
 use std::io::ErrorKind as IOErrorKind;
 use std::io::Error as IOError;
 use std::io::prelude::*;
-use serial::prelude::*;
+
 use std::ffi::OsString;
-use pprzlink::parser::PprzProtocolVersion;
+
 use std::time::Duration;
+
 use std::error::Error;
+
 use std::sync::Arc;
+
+use serial::prelude::*;
+
+use pprzlink::parser::PprzProtocolVersion;
+
 
 
 pub struct LinkConfig {

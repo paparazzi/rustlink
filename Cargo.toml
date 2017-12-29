@@ -5,10 +5,11 @@ authors = ["Michal Podhradsky <mpodhradsky@galois.com>"]
 
 [dependencies]
 pprzlink = { git = "https://github.com/paparazzi/pprzlink-rust.git" }
-ivyrust = "0.1.1"
+ivyrust = {git = "https://github.com/paparazzi/ivy-rust" }
 clap = "2.27.1"
-lazy_static = "0.2"
+#lazy_static = "0.2"
 regex = "0.2"
 serial="0.4"
 rusthacl = { git = "https://github.com/podhrmic/rusthacl.git" }
 rand = "0.3.18"
+libc = "0.2"
