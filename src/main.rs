@@ -29,15 +29,10 @@ use pprzlink::transport::PprzTransport;
 
 use time::*;
 
-use std::io::BufReader;
-use rand::Rng;
-use rand::os::OsRng;
-//lazy_static! {
-//    static ref MSG_QUEUE: Mutex<VecDeque<PprzMessage>> = Mutex::new(VecDeque::new());
-//    static ref PING_TIME: Mutex<Instant> = Mutex::new(Instant::now());
-//    static ref RE_DATALINK: Regex = Regex::new("ground_dl .*").unwrap(); // TODO: factor out?
-//    static ref PING_TIME_VALUE: Mutex<f32> = Mutex::new(-1.0);
-//}
+// FOR GEC COMMS
+//use std::io::BufReader;
+//use rand::Rng;
+//use rand::os::OsRng;
 
 
 #[allow(dead_code)]
@@ -117,20 +112,21 @@ fn thread_main(
 		    	let mut ivy_lock = ivy_cb.data.lock();
 			    if let Ok(ref mut ivy_msgs) = ivy_lock {
 					while !ivy_msgs.is_empty() {
-					{
-						let mut values: Vec<&str> = ivy_msgs[0][0].split(' ').collect();
-						values.insert(0,""); // the parser expects a sender field
-
-						match dictionary.find_msg_by_name(values[1]) {
-					        Some(mut msg) => {
-					        	msg.update_from_string(&values);
-					        	msg_queue.push_back(msg);
-					        }
-					        None => {
-						        println!("Message not found: {}",&ivy_msgs[0][0]);
-						    }
+						{
+							let mut values: Vec<&str> = ivy_msgs[0][0].split(' ').collect();
+							values.insert(0,""); // the parser expects a sender field
+	
+							match dictionary.find_msg_by_name(values[1]) {
+						        Some(mut msg) => {
+						        	msg.update_from_string(&values);
+						        	// append at the end (no priority)
+						        	msg_queue.push_back(msg);
+						        }
+						        None => {
+							        println!("Message not found: {}",&ivy_msgs[0][0]);
+							    }
+							}
 						}
-					}
 						ivy_msgs.pop();
 					}
 			    }
@@ -138,14 +134,12 @@ fn thread_main(
                 while !msg_queue.is_empty() {
                     // get a message from the front of the queue
                     let new_msg = msg_queue.pop_front().unwrap();
-                    println!("Sending {}", new_msg.to_string().unwrap());
-                    
+
                     // check for ping
                     if new_msg.id == ping_msg_id {
                     	// this message is a PING message, update the ping time
                     	ping_cb.reset();
                     }
-                    
 
                     // get a transort
                     let mut tx = PprzTransport::new();
@@ -153,8 +147,6 @@ fn thread_main(
 
                     // construct a message from the transport
                     tx.construct_pprz_msg(&buf);
-                    //println!("message len = {}", tx.buf.len());
-                    //print_array(&tx.buf);
 
                     let len = port.com_write(tx.buf.as_mut_slice())?;
                     status_report.tx_bytes += len;
@@ -177,19 +169,13 @@ fn thread_main(
             Err(_) => continue,
         };
         status_report.rx_bytes += len;
-        //println!("received {} bytes", len);
 
         // parse received data and optionally send a message
-        // spprz_check_and_parse()
         for idx in 0..len {
-            //println!("byte = {:x}", buf[idx]);
             if rx.parse_byte(buf[idx]) {
                 //
                 //  REGULAR COMMUNICATION
                 //
-                // we get here if we decrypted the message sucessfully
-                //println!("msg_id={}", rx.buf[1]);
-
                 status_report.rx_msgs += 1;
                 let name = dictionary
                     .get_msg_name(
@@ -197,9 +183,6 @@ fn thread_main(
                     	PprzMessage::get_msg_id_from_buf(&rx.buf, dictionary.protocol))
                     .unwrap();
                 let mut msg = dictionary.find_msg_by_name(&name).unwrap();
-
-                //println!("Found message: {}", msg.name);
-                //println!("Found sender: {}", rx.buf[0]);
 
                 // update message fields with real values
                 msg.update(&rx.buf);
@@ -209,17 +192,9 @@ fn thread_main(
                     // update time
                     ping_cb.update();
                 }
-
-                // send the message
-//                println!(
-//                    "{} Received new msg: {}",
-//                    debug_time.elapsed(),
-//                    msg.to_string().unwrap()
-//                );
                 ivyrust::ivy_send_msg(msg.to_string().unwrap());
             } // end parse byte
         } // end for idx in 0..len
-
 
         // update status & send status message if needed
         if status_report_timer.elapsed() >= status_report_period {
@@ -227,19 +202,16 @@ fn thread_main(
 							            	&mut status_report,
 								            status_report_period,
 								            ping_cb.ping_time_ema);
-			println!("Updating status! {:?}",report_msg);
 
 		    // time is up, send the report
 			let mut s = report_msg.to_string().unwrap();
 		    s.remove(0);
 		    s.insert_str(0, "link");
-		    println!("Sending status msg: {}",s);
 		    ivyrust::ivy_send_msg(s);
 
             // reset the timer
             status_report_timer = Instant::now();
         }
-
     } // end-loop
 }
 
@@ -326,9 +298,6 @@ fn main() {
     let dict = Arc::clone(&dictionary);
     let queue = Arc::clone(&msg_queue);
     let _ = thread::spawn(move || thread_ping(conf, dict, queue));
-
-    // bind global callback
-    //let _ = ivy_bind_msg(global_ivy_callback, String::from("(.*)"));
 
     // close
     t.join().expect("Error waiting for serial thread to finish");
