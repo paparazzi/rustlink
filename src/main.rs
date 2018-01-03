@@ -1,4 +1,3 @@
-extern crate regex;
 extern crate serial;
 extern crate ivyrust;
 extern crate pprzlink;
@@ -29,10 +28,6 @@ use pprzlink::parser::{PprzDictionary, PprzMsgClassID, PprzMessage};
 use pprzlink::transport::PprzTransport;
 
 use time::*;
-
-use regex::Regex;
-
-
 
 use std::io::BufReader;
 use rand::Rng;
@@ -118,17 +113,27 @@ fn thread_main(
             // process messages from the queue and encrypt them before sending
             let mut lock = msg_queue.lock();
             if let Ok(ref mut msg_queue) = lock {
-                //println!("{} MSG_queue locked", debug_time.elapsed());
                 // process ivy_messages first, and push them into the message queue
 		    	let mut ivy_lock = ivy_cb.data.lock();
 			    if let Ok(ref mut ivy_msgs) = ivy_lock {
 					while !ivy_msgs.is_empty() {
-						// get the first element
-						// convert to pprz msg
-						// push to the end of the queue (no priority here yet)
+					{
+						let mut values: Vec<&str> = ivy_msgs[0][0].split(' ').collect();
+						values.insert(0,""); // the parser expects a sender field
+
+						match dictionary.find_msg_by_name(values[1]) {
+					        Some(mut msg) => {
+					        	msg.update_from_string(&values);
+					        	msg_queue.push_back(msg);
+					        }
+					        None => {
+						        println!("Message not found: {}",&ivy_msgs[0][0]);
+						    }
+						}
+					}
+						ivy_msgs.pop();
 					}
 			    }
-                
                 
                 while !msg_queue.is_empty() {
                     // get a message from the front of the queue
@@ -138,7 +143,7 @@ fn thread_main(
                     // check for ping
                     if new_msg.id == ping_msg_id {
                     	// this message is a PING message, update the ping time
-                    	ping_cb.update();
+                    	ping_cb.reset();
                     }
                     
 
@@ -172,7 +177,7 @@ fn thread_main(
             Err(_) => continue,
         };
         status_report.rx_bytes += len;
-        println!("received {} bytes", len);
+        //println!("received {} bytes", len);
 
         // parse received data and optionally send a message
         // spprz_check_and_parse()
@@ -222,11 +227,13 @@ fn thread_main(
 							            	&mut status_report,
 								            status_report_period,
 								            ping_cb.ping_time_ema);
+			println!("Updating status! {:?}",report_msg);
 
 		    // time is up, send the report
 			let mut s = report_msg.to_string().unwrap();
 		    s.remove(0);
 		    s.insert_str(0, "link");
+		    println!("Sending status msg: {}",s);
 		    ivyrust::ivy_send_msg(s);
 
             // reset the timer
@@ -263,80 +270,6 @@ fn thread_ping(
         thread::sleep(time::Duration::from_millis(config.ping_period));
     }
 }
-
-
-/// This global callback is just a cludge,
-/// because we can not currently bind individual messages separately
-/// like `ivy_bind_msg(my_msg.callback(), my_msg.to_ivy_regexpr())`
-///
-/// Instead, we use a shared static variable as `Vec<PprzMessage>` and
-/// another static variable for a `Vec<PprzDictionary>` to hold the parsed
-/// messages. When a callback is received, it will be a single string containing
-/// the whole message, for example '1 RTOS_MON 15 0 76280 0 495.53').
-///
-/// We parse the name and match it with regexpr for Datalink class, if it matches
-/// the global vec of messages will be updated.
-//fn global_ivy_callback(mut data: Vec<String>) {
-//    // TODO: we don't really need a regexpr, can just split and match the individual strings...
-//    let data = &(data.pop().unwrap());
-//    let mut lock = DICTIONARY.try_lock();
-//
-//    // continue only if the message came from the ground
-//    if !RE_DATALINK.is_match(data) {
-//        return;
-//    }
-//
-//    if let Ok(ref mut dictionary_vector) = lock {
-//        if !dictionary_vector.is_empty() {
-//            let dictionary = dictionary_vector.pop().unwrap();
-//            if dictionary.contains(PprzMsgClassID::Datalink) {
-//                let msgs = dictionary
-//                    .get_msgs(PprzMsgClassID::Datalink)
-//                    .unwrap()
-//                    .messages;
-//
-//                // iterate over messages
-//                for mut msg in msgs {
-//                    //let pattern = msg.to_ivy_regexpr();
-//                    let pattern = String::from("ground_dl ") + &msg.name + " .*";
-//                    let re = Regex::new(&pattern).unwrap();
-//                    if re.is_match(data) {
-//                        // parse the message and push it into the message queue
-//                        let values: Vec<&str> = data.split(' ').collect();
-//
-//                        // set the sender to be 0 (that is default)
-//
-//                        // set msg name (but we already know it)
-//
-//                        // update from strig
-//                        msg.update_from_string(&values);
-//                        //println!("new message is: {}", msg);
-//
-//                        // if found, update the global msg
-//                        let mut msg_lock = MSG_QUEUE.lock();
-//                        if let Ok(ref mut msg_vector) = msg_lock {
-//                            // append at the end of vector
-//                            msg_vector.push_back(msg);
-//                            //println!("Global callback: msg vector len = {}", msg_vector.len());
-//                        }
-//                        break;
-//                    }
-//                }
-//
-//            } else {
-//                println!("Dictionary doesn't contain Datalink message class");
-//            }
-//
-//            // push the dictionary back (sight)
-//            dictionary_vector.push(dictionary);
-//        }
-//    }
-//}
-
-
-
-
-
 
 
 /// Main IVY loop

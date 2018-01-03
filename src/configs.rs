@@ -237,13 +237,12 @@ pub fn link_update_status(
     for field in &mut msg.fields {
         match field.name.as_ref() {
             "ac_id" => {
-                // this is AC_ID, we can leave blank for now
-                field.value = PprzMsgBaseType::String(String::from("4"));
+                // this is AC_ID, we can leave blank for now TODO: has to match the AC id
+                field.value = PprzMsgBaseType::String(String::from("1"));
             }
             "link_id" => {
                 // link ID will be -1 unless we explicitly set it
                 field.value = PprzMsgBaseType::String(String::from("-1"));
-
             }
             "run_time" => {
                 // increment runtime

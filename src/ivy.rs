@@ -43,6 +43,7 @@ impl LinkIvyPing {
     
     /// Callback processing ping
     /// updates the current PING time, and resets the timer
+    #[allow(dead_code)]
     pub fn callback_ping(&mut self, _: Vec<String>) {
     	let mut lock = self.ping_instant.lock();
 	    if let Ok(ref mut ping_instant) = lock {
@@ -60,12 +61,13 @@ impl LinkIvyPing {
 	    if let Ok(ref mut ping_instant) = lock {
 			self.ping_time = ping_instant.elapsed();
 			self.ping_time_ema = self.alpha * self.ping_time + 
-								 (1.0 - self.alpha) * self.ping_time;
+								 (1.0 - self.alpha) * self.ping_time_ema;
 			ping_instant.reset();
 	    }
     }
     
 	/// Bind ivy message to a simple callback with given regexpr
+	#[allow(dead_code)]
     pub fn ivy_bind_ping<F>(&mut self, cb: F, regexpr: String)
     where
         F: Fn(&mut LinkIvyPing, Vec<String>),
