@@ -114,6 +114,13 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
                 )
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("remote_addr")
+                .short("r")
+                .value_name("remote IP addr")
+                .help("Default is localhost")
+                .takes_value(true),
+        )
         .get_matches();
 
     let ivy_bus = matches.value_of("ivy_bus").unwrap_or(
@@ -149,6 +156,10 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 	let udp_port = udp_port.parse::<u16>().expect("Incorrect udp_port");
 	let udp_uplink_port = matches.value_of("udp_uplink_port").unwrap_or("4243");
 	let udp_uplink_port = udp_uplink_port.parse::<u16>().expect("Incorrect udp_uplink_port");
+
+    let remote_addr = String::from(matches.value_of("remote_addr").unwrap_or("0.0.0.0"));
+    println!("Value for remote_addr: {}", remote_addr);
+
 	
 	let pprzlink_version = matches.value_of("version").unwrap_or("2.0");
     let pprzlink_version = pprzlink_version.parse::<f32>().expect("Supported versions are 1.0 or 2.0");
@@ -183,6 +194,7 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 		pprzlink_version: pprzlink_version,
 		ivy_bus: ivy_bus,
 		pprz_root: pprz_root,
+		remote_addr: remote_addr,
 	})
 }
 

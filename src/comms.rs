@@ -39,6 +39,8 @@ pub struct LinkConfig {
 	pub ivy_bus: String,
 	/// PAPARAZZ_SRC path
 	pub pprz_root: String,
+	/// Remote IP address
+	pub remote_addr: String,
 }
 
 
@@ -88,7 +90,7 @@ impl LinkComm {
 			};
 			// let the OS decide to which interface to bind/connect, specify only the port
 			let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], config.udp_port as u16)))?;
-			socket.connect(SocketAddr::from(([0, 0, 0, 0], config.udp_uplink_port as u16)))?;
+			socket.connect(config.remote_addr.clone() + ":" + &config.udp_uplink_port.to_string())?;
 		    com.socket = Some(socket);
 		    return Ok(com)
 			

@@ -104,7 +104,8 @@ fn thread_main(
     // get debug time
     let debug_time = RustlinkTime::new();
 
-    loop {    	
+    loop {  
+    	// TODO: refactor msg sending so it can handle priority/encryption
             // process messages from the queue and encrypt them before sending
             let mut lock = msg_queue.lock();
             if let Ok(ref mut msg_queue) = lock {
@@ -176,6 +177,7 @@ fn thread_main(
                 //
                 //  REGULAR COMMUNICATION
                 //
+                // let buf = parse_incoming_messages(buf); 
                 status_report.rx_msgs += 1;
                 let name = dictionary
                     .get_msg_name(
