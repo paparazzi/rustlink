@@ -24,7 +24,7 @@ use std::sync::Arc;
 
 use std::collections::VecDeque;
 
-use pprzlink::parser::{PprzDictionary, PprzMsgClassID, PprzMessage};
+use pprzlink::parser::{PprzDictionary, PprzMessage};
 use pprzlink::transport::PprzTransport;
 
 use time::*;
@@ -95,7 +95,7 @@ fn thread_main(
     // initialize ivy global callback struct
     let mut ivy_cb = IvyMessage::new();
     // subsribe to all ivy messages coming from "ground_dl"
-    ivy_cb.ivy_bind_msg(IvyMessage::callback, String::from("ground_dl (.*)"));
+    ivy_cb.ivy_bind_msg(IvyMessage::callback, config.sender_regexp.clone() + " (.*)");
     
     // initialize an emty buffer
     let mut buf = [0; 255]; // still have to manually allocate an array
@@ -181,7 +181,7 @@ fn thread_main(
                 status_report.rx_msgs += 1;
                 let name = dictionary
                     .get_msg_name(
-                    	PprzMsgClassID::Telemetry,
+                    	config.rx_msg_class,
                     	PprzMessage::get_msg_id_from_buf(&rx.buf, dictionary.protocol))
                     .expect("thread main: message name not found");
                 let mut msg = dictionary.find_msg_by_name(&name).expect("thread main: no message found");

@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use serial::prelude::*;
 
-use pprzlink::parser::PprzProtocolVersion;
+use pprzlink::parser::{PprzProtocolVersion,PprzMsgClassID};
 
 
 
@@ -41,6 +41,10 @@ pub struct LinkConfig {
 	pub pprz_root: String,
 	/// Remote IP address
 	pub remote_addr: String,
+	/// Sender part of ivy callback regexpr
+	pub sender_regexp: String,
+	/// Rx message class to match against
+	pub rx_msg_class: PprzMsgClassID,
 }
 
 
@@ -91,6 +95,10 @@ impl LinkComm {
 			// let the OS decide to which interface to bind/connect, specify only the port
 			let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], config.udp_port as u16)))?;
 			socket.connect(config.remote_addr.clone() + ":" + &config.udp_uplink_port.to_string())?;
+			// set read timeout of 10^6 ns (1ms)
+			socket.set_read_timeout(Some(Duration::new(0,1_000_000))).expect("set_read_timeout call failed");
+			// set write timeout of 10^6 ns (1ms)
+			socket.set_write_timeout(Some(Duration::new(0,1_000_000))).expect("set_write_timeout call failed");
 		    com.socket = Some(socket);
 		    return Ok(com)
 			

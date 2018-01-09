@@ -12,7 +12,7 @@ use std::ffi::OsString;
 
 use std::fs::File;
 
-use pprzlink::parser::{PprzProtocolVersion,PprzDictionary,PprzMessage,PprzMsgBaseType,build_dictionary};
+use pprzlink::parser::{PprzProtocolVersion,PprzDictionary,PprzMessage,PprzMsgBaseType,build_dictionary, PprzMsgClassID};
 
 use std::collections::VecDeque;
 
@@ -121,6 +121,25 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
                 .help("Default is localhost")
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("global_bind_ivy")
+                .long("global_bind_ivy")
+                .value_name("global bind ivy sender")
+                .help(
+                    "Sender part of the global ivy callback regexp, default is ground_dl",
+                )
+                .takes_value(true),
+        )
+        .arg(
+            Arg::with_name("rx_msg_class")
+                .long("rx_msg_class")
+                .value_name("rx message class")
+                .help(
+                    "Message class that is expected to be received over the port.
+                    Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
+                )
+                .takes_value(true),
+        )
         .get_matches();
 
     let ivy_bus = matches.value_of("ivy_bus").unwrap_or(
@@ -158,10 +177,10 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 	let udp_uplink_port = matches.value_of("udp_uplink_port").unwrap_or("4243");
 	let udp_uplink_port = udp_uplink_port.parse::<u16>().expect("Incorrect udp_uplink_port");
 
-    let remote_addr = String::from(matches.value_of("remote_addr").unwrap_or("0.0.0.0"));
+	// if the remote address is not specified, assume localhost
+    let remote_addr = String::from(matches.value_of("remote_addr").unwrap_or("127.0.0.1"));
     println!("Value for remote_addr: {}", remote_addr);
 
-	
 	let pprzlink_version = matches.value_of("version").unwrap_or("2.0");
     let pprzlink_version = pprzlink_version.parse::<f32>().expect("Supported versions are 1.0 or 2.0");
     let pprzlink_version = match pprzlink_version as u32 {
@@ -176,7 +195,21 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
     	}
     };    
     println!("Value for pprzlink version: {}", pprzlink_version);
-    
+
+	let rx_msg_class = matches.value_of("rx_msg_class").unwrap_or("Telemetry").to_lowercase();
+	let rx_msg_class = match rx_msg_class.as_ref() {
+		"telemetry" => PprzMsgClassID::Telemetry,
+		"datalink" => PprzMsgClassID::Datalink,
+		"ground" => PprzMsgClassID::Ground,
+		"alert" => PprzMsgClassID::Alert,
+		"intermcu" => PprzMsgClassID::Intermcu,
+		_ => panic!("Unknown rx message class: {}", rx_msg_class),
+	};
+	println!("Global message class is set to {}", rx_msg_class);
+
+	let global_bind_ivy_sender = matches.value_of("global_bind_ivy").unwrap_or("ground_dl");
+	println!("Global ivy callback will be filtered with sender: {}", global_bind_ivy_sender);
+
     let pprz_root = match env::var("PAPARAZZI_SRC") {
         Ok(var) => var,
         Err(e) => {
@@ -196,6 +229,8 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 		ivy_bus: ivy_bus,
 		pprz_root: pprz_root,
 		remote_addr: remote_addr,
+		sender_regexp: String::from(global_bind_ivy_sender),
+		rx_msg_class: rx_msg_class,
 	})
 }
 
