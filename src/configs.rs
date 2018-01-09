@@ -29,7 +29,7 @@ pub fn link_build_msg_queue() -> Arc<Mutex<VecDeque<PprzMessage>>> {
 pub fn link_build_dictionary(config: Arc<LinkConfig>) -> Arc<PprzDictionary> {
 	// construct a dictionary
 	let xml_file = config.pprz_root.clone() + "/sw/ext/pprzlink/message_definitions/v1.0/messages.xml";
-    let file = File::open(xml_file).unwrap();
+    let file = File::open(xml_file).expect("Messages.xml file not found");
     Arc::new(build_dictionary(file,config.pprzlink_version))
 }
 
