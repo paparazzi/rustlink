@@ -177,14 +177,14 @@ fn thread_main(
                 //
                 //  REGULAR COMMUNICATION
                 //
-                // let buf = parse_incoming_messages(buf); 
+                // let buf = parse_incoming_messages(buf);                     
                 status_report.rx_msgs += 1;
                 let name = dictionary
                     .get_msg_name(
                     	PprzMsgClassID::Telemetry,
                     	PprzMessage::get_msg_id_from_buf(&rx.buf, dictionary.protocol))
-                    .unwrap();
-                let mut msg = dictionary.find_msg_by_name(&name).unwrap();
+                    .expect("thread main: message name not found");
+                let mut msg = dictionary.find_msg_by_name(&name).expect("thread main: no message found");
 
                 // update message fields with real values
                 msg.update(&rx.buf);
