@@ -151,6 +151,7 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
         0 => false,
         1 | _ => true,
     };
+	println!("Use UDP: {}",udp);
 	
 	let udp_port = matches.value_of("udp_port").unwrap_or("4242");
 	let udp_port = udp_port.parse::<u16>().expect("Incorrect udp_port");
