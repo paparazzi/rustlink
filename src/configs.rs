@@ -143,6 +143,15 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
                 )
                 .takes_value(true),
         )
+        .arg(
+            Arg::with_name("name")
+                .short("n")
+                .value_name("name")
+                .help(
+                    "Program name, for debugging purposes",
+                )
+                .takes_value(true),
+        )
         .get_matches();
 
     let ivy_bus = matches.value_of("ivy_bus").unwrap_or(
@@ -213,6 +222,9 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
 	let sender_id = matches.value_of("sender_id").unwrap_or("ground_dl");
 	println!("Sender id: {}", sender_id);
 
+	let name = matches.value_of("name").unwrap_or("");
+	println!("Rustlink name: {}", name);
+
     let pprz_root = match env::var("PAPARAZZI_SRC") {
         Ok(var) => var,
         Err(e) => {
@@ -234,6 +246,7 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
 		remote_addr: remote_addr,
 		sender_id: String::from(sender_id),
 		rx_msg_class: rx_msg_class,
+		name: name,
 	})
 }
 

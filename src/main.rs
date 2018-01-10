@@ -199,20 +199,22 @@ fn thread_main(
         } // end for idx in 0..len
 
         // update status & send status message if needed
-        if status_report_timer.elapsed() >= status_report_period {
-            report_msg = link_update_status(report_msg, 
-							            	&mut status_report,
-								            status_report_period,
-								            ping_cb.ping_time_ema);
-
-		    // time is up, send the report
-			let mut s = report_msg.to_string().unwrap();
-		    s.remove(0);
-		    s.insert_str(0, "link");
-		    ivyrust::ivy_send_msg(s);
-
-            // reset the timer
-            status_report_timer = Instant::now();
+        // only if the period is non-zero
+        if config.status_period != 0 {
+	        if status_report_timer.elapsed() >= status_report_period {
+	            report_msg = link_update_status(report_msg, 
+								            	&mut status_report,
+									            status_report_period,
+									            ping_cb.ping_time_ema);
+			    // time is up, send the report
+				let mut s = report_msg.to_string().unwrap();
+			    s.remove(0);
+			    s.insert_str(0, "link");
+			    ivyrust::ivy_send_msg(s);
+	
+	            // reset the timer
+	            status_report_timer = Instant::now();
+	        }	
         }
     } // end-loop
 }
@@ -295,12 +297,13 @@ fn main() {
         println!("Main thread finished");
     });
 
-    // ping periodic
-    let conf = Arc::clone(&config);
-    let dict = Arc::clone(&dictionary);
-    let queue = Arc::clone(&msg_queue);
-    let _ = thread::spawn(move || thread_ping(conf, dict, queue));
-
+    // ping periodic (only if the ping period is non-zero
+    if config.ping_period != 0 {
+        let conf = Arc::clone(&config);
+	    let dict = Arc::clone(&dictionary);
+	    let queue = Arc::clone(&msg_queue);
+	    let _ = thread::spawn(move || thread_ping(conf, dict, queue));
+    }
     // close
     t.join().expect("Error waiting for serial thread to finish");
 

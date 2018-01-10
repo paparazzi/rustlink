@@ -45,6 +45,8 @@ pub struct LinkConfig {
 	pub sender_id: String,
 	/// Rx message class to match against
 	pub rx_msg_class: PprzMsgClassID,
+	/// Name of the program for debugging purposes
+	pub name: String,
 }
 
 
