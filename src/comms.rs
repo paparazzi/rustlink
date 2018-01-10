@@ -85,7 +85,7 @@ pub struct LinkComm {
 	com_type: LinkCommType,
 	port: Option<serial::SystemPort>,
 	socket: Option<UdpSocket>,
-	udp_port: u16,
+	udp_uplink_port: u16,
 	remote_addr: SocketAddr,
 }
 
@@ -97,7 +97,7 @@ impl LinkComm {
 				com_type: LinkCommType::Udp,
 				port: None,
 				socket: None,
-				udp_port: config.udp_port,
+				udp_uplink_port: config.udp_uplink_port,
 				remote_addr: (config.remote_addr.clone() + ":" + &config.udp_uplink_port.to_string()).parse()?,
 			};
 			// let the OS decide to which interface to bind/connect, specify only the port
@@ -116,7 +116,7 @@ impl LinkComm {
 				com_type: LinkCommType::Serial,
 				port: None,
 				socket: None,
-				udp_port: 0,
+				udp_uplink_port: config.udp_uplink_port,
 				remote_addr: (config.remote_addr.clone() + ":" + &config.udp_uplink_port.to_string()).parse()?,
 			};
 			let port = serial::open(&config.port)?;
@@ -174,7 +174,7 @@ impl LinkComm {
 				match self.socket {
 					Some(ref mut socket) => {
 						let (number_of_bytes, src_addr) = socket.recv_from(buf)?;
-						if src_addr.port() == self.udp_port {
+						if src_addr.port() == self.udp_uplink_port {
 							Ok(number_of_bytes)
 						} else {
 							Ok(0)
