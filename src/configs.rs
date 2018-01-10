@@ -97,6 +97,15 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
                 .takes_value(false),
         )
         .arg(
+            Arg::with_name("udp_broadcast")
+                .long("udp_broadcast")
+                .value_name("udp broadcast")
+                .help(
+                    "Enable UDP broadcast",
+                )
+                .takes_value(false),
+        )
+        .arg(
             Arg::with_name("udp_port")
                 .long("udp_port")
                 .value_name("udp port")
@@ -118,7 +127,8 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
             Arg::with_name("remote_addr")
                 .short("r")
                 .value_name("remote IP addr")
-                .help("Default is localhost")
+                .help("Default is 127.0.0.1 and can be set to a broadcast address if
+the broadcast flag is specified")
                 .takes_value(true),
         )
         .arg(
@@ -183,6 +193,12 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
         1 | _ => true,
     };
 	println!("Use UDP: {}",udp);
+
+	let udp_broadcast = match matches.occurrences_of("udp_broadcast") {
+        0 => false,
+        1 | _ => true,
+    };
+	println!("Use UDP broadcast: {}",udp_broadcast);
 	
 	let udp_port = matches.value_of("udp_port").unwrap_or("4242");
 	let udp_port = udp_port.parse::<u16>().expect("Incorrect udp_port");
@@ -247,6 +263,7 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
 		sender_id: String::from(sender_id),
 		rx_msg_class: rx_msg_class,
 		name: String::from(name),
+		udp_broadcast: udp_broadcast,
 	})
 }
 

@@ -39,7 +39,7 @@ pub struct LinkConfig {
 	pub ivy_bus: String,
 	/// PAPARAZZ_SRC path
 	pub pprz_root: String,
-	/// Remote IP address
+	/// Remote IP address (can be broadcast if the broadcast flag is specified)
 	pub remote_addr: String,
 	/// Sender ID
 	pub sender_id: String,
@@ -47,6 +47,8 @@ pub struct LinkConfig {
 	pub rx_msg_class: PprzMsgClassID,
 	/// Name of the program for debugging purposes
 	pub name: String,
+	/// Allow UDP broadcast
+	pub udp_broadcast: bool,
 }
 
 
@@ -83,6 +85,8 @@ pub struct LinkComm {
 	com_type: LinkCommType,
 	port: Option<serial::SystemPort>,
 	socket: Option<UdpSocket>,
+	udp_port: u16,
+	remote_addr: SocketAddr,
 }
 
 impl LinkComm {
@@ -93,10 +97,12 @@ impl LinkComm {
 				com_type: LinkCommType::Udp,
 				port: None,
 				socket: None,
+				udp_port: config.udp_port,
+				remote_addr: (config.remote_addr.clone() + ":" + &config.udp_uplink_port.to_string()).parse()?,
 			};
 			// let the OS decide to which interface to bind/connect, specify only the port
 			let socket = UdpSocket::bind(SocketAddr::from(([0, 0, 0, 0], config.udp_port as u16)))?;
-			socket.connect(config.remote_addr.clone() + ":" + &config.udp_uplink_port.to_string())?;
+			socket.set_broadcast(config.udp_broadcast)?;
 			// set read timeout of 10^6 ns (1ms)
 			socket.set_read_timeout(Some(Duration::new(0,1_000_000))).expect("set_read_timeout call failed");
 			// set write timeout of 10^6 ns (1ms)
@@ -110,6 +116,8 @@ impl LinkComm {
 				com_type: LinkCommType::Serial,
 				port: None,
 				socket: None,
+				udp_port: 0,
+				remote_addr: (config.remote_addr.clone() + ":" + &config.udp_uplink_port.to_string()).parse()?,
 			};
 			let port = serial::open(&config.port)?;
 		    let port = match configure_port(port, config.baudrate) {
@@ -139,7 +147,7 @@ impl LinkComm {
 			LinkCommType::Udp => {
 				match self.socket {
 					Some(ref mut socket) => {
-						socket.send(buf)
+						socket.send_to(buf, self.remote_addr)
 					}
 					None => {
 						Err(IOError::new(IOErrorKind::Other, "Tx socket not initialized"))
@@ -165,7 +173,12 @@ impl LinkComm {
 			LinkCommType::Udp => {
 				match self.socket {
 					Some(ref mut socket) => {
-						socket.recv(buf)
+						let (number_of_bytes, src_addr) = socket.recv_from(buf)?;
+						if src_addr.port() == self.udp_port {
+							Ok(number_of_bytes)
+						} else {
+							Ok(0)
+						}
 					}
 					None => {
 						Err(IOError::new(IOErrorKind::Other, "Tx socket not initialized"))
