@@ -66,7 +66,7 @@ fn thread_main(
     
     let mut port = match LinkComm::new(Arc::clone(&config)) {
     	Ok(p) => p,
-    	Err(e) => panic!("Comm initialization failed: {}", e),
+    	Err(e) => panic!("{}: Comm initialization failed: {}", config.name, e),
     };
 
     // initialize variables in LINK_REPORT
@@ -124,7 +124,7 @@ fn thread_main(
 						        	msg_queue.push_back(msg);
 						        }
 						        None => {
-							        println!("Message not found: {}",&ivy_msgs[0][0]);
+							        println!("{} Message not found: {}",config.name, &ivy_msgs[0][0]);
 							    }
 							}
 						}
@@ -154,7 +154,8 @@ fn thread_main(
                     status_report.tx_msgs += 1;
                     if len != tx.buf.len() {
                         println!(
-                            "{} Written {} bytes, but the message was {} bytes",
+                            "{}: {} Written {} bytes, but the message was {} bytes",
+                            config.name,
                             debug_time.elapsed(),
                             len,
                             tx.buf.len()

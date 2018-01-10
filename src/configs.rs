@@ -246,7 +246,7 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
 		remote_addr: remote_addr,
 		sender_id: String::from(sender_id),
 		rx_msg_class: rx_msg_class,
-		name: name,
+		name: String::from(name),
 	})
 }
 
