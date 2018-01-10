@@ -114,7 +114,7 @@ fn thread_main(
 			    if let Ok(ref mut ivy_msgs) = ivy_lock {
 					while !ivy_msgs.is_empty() {
 						{
-							let mut values: Vec<&str> = ivy_msgs[0][0].split(' ').collect();
+							let mut values: Vec<&str> = ivy_msgs[0][0].split(&[' ', ','][..]).collect();
 							values.insert(0,&config.sender_id); // the parser expects a sender field
 	
 							match dictionary.find_msg_by_name(values[1]) {
