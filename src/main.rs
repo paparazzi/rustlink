@@ -94,8 +94,8 @@ fn thread_main(
     
     // initialize ivy global callback struct
     let mut ivy_cb = IvyMessage::new();
-    // subsribe to all ivy messages coming from "ground_dl"
-    ivy_cb.ivy_bind_msg(IvyMessage::callback, config.sender_regexp.clone() + " (.*)");
+    // subsribe to all ivy messages coming from "sender_id"
+    ivy_cb.ivy_bind_msg(IvyMessage::callback, String::from("^") + &config.sender_id + " (.*)");
     
     // initialize an emty buffer
     let mut buf = [0; 255]; // still have to manually allocate an array
@@ -115,7 +115,7 @@ fn thread_main(
 					while !ivy_msgs.is_empty() {
 						{
 							let mut values: Vec<&str> = ivy_msgs[0][0].split(' ').collect();
-							values.insert(0,""); // the parser expects a sender field
+							values.insert(0,&config.sender_id); // the parser expects a sender field
 	
 							match dictionary.find_msg_by_name(values[1]) {
 						        Some(mut msg) => {

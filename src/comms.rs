@@ -41,8 +41,8 @@ pub struct LinkConfig {
 	pub pprz_root: String,
 	/// Remote IP address
 	pub remote_addr: String,
-	/// Sender part of ivy callback regexpr
-	pub sender_regexp: String,
+	/// Sender ID
+	pub sender_id: String,
 	/// Rx message class to match against
 	pub rx_msg_class: PprzMsgClassID,
 }

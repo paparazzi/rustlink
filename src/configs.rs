@@ -122,11 +122,14 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("global_bind_ivy")
-                .long("global_bind_ivy")
-                .value_name("global bind ivy sender")
+            Arg::with_name("sender_id")
+                .long("sender_id")
+                .value_name("sender id")
                 .help(
-                    "Sender part of the global ivy callback regexp, default is ground_dl",
+                    "Sender ID used when sending messages over port (not over Ivy)
+Can be numeric (like AC_ID) or a string (\"ground_dl\") in which case it
+gets translated to zero. Sender ID is also used to filter ivy callback messages,
+only those matching \"^sender_id (.*)\" regexpr are received. Default is \"ground_dl\"",
                 )
                 .takes_value(true),
         )
@@ -136,7 +139,7 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
                 .value_name("rx message class")
                 .help(
                     "Message class that is expected to be received over the port.
-                    Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
+Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
                 )
                 .takes_value(true),
         )
@@ -207,8 +210,8 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 	};
 	println!("Global message class is set to {}", rx_msg_class);
 
-	let global_bind_ivy_sender = matches.value_of("global_bind_ivy").unwrap_or("ground_dl");
-	println!("Global ivy callback will be filtered with sender: {}", global_bind_ivy_sender);
+	let sender_id = matches.value_of("sender_id").unwrap_or("ground_dl");
+	println!("Sender id: {}", sender_id);
 
     let pprz_root = match env::var("PAPARAZZI_SRC") {
         Ok(var) => var,
@@ -229,7 +232,7 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 		ivy_bus: ivy_bus,
 		pprz_root: pprz_root,
 		remote_addr: remote_addr,
-		sender_regexp: String::from(global_bind_ivy_sender),
+		sender_id: String::from(sender_id),
 		rx_msg_class: rx_msg_class,
 	})
 }
