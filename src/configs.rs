@@ -19,7 +19,6 @@ use std::collections::VecDeque;
 use std::time::{Instant, Duration};
 
 
-
 /// Initialize the message queue
 pub fn link_build_msg_queue() -> Arc<Mutex<VecDeque<PprzMessage>>> {
 	Arc::new(Mutex::new(VecDeque::new()))
@@ -33,10 +32,9 @@ pub fn link_build_dictionary(config: Arc<LinkConfig>) -> Arc<PprzDictionary> {
     Arc::new(build_dictionary(file,config.pprzlink_version))
 }
 
-/// Take command line arguments and create a LinkCondig struct
-pub fn link_init_and_configure() -> Arc<LinkConfig> {
-	// Construct command line arguments
-    let matches = App::new("Rustlink for Paparazzi")
+
+fn link_get_arguments() -> clap::ArgMatches<'static>  {
+	App::new("Rustlink for Paparazzi")
         .version("0.2")
         .arg(
             Arg::with_name("ivy_bus")
@@ -162,7 +160,28 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
                 )
                 .takes_value(true),
         )
-        .get_matches();
+        .arg(
+            Arg::with_name("ac_name")
+                .short("a")
+                .value_name("aircraft name")
+                .help("Name of the aircraft (to find keys_gcs.h and aircraft.h). Can be empty.")
+                .takes_value(true),
+		)
+        .arg(
+            Arg::with_name("crypto")
+	            .short("c")
+                .long("crypto")
+                .help(
+                    "Enables encrypted communication. Default is false",
+                )
+                .takes_value(false),
+        )
+        .get_matches()
+}
+
+/// Take command line arguments and create a LinkCondig struct
+pub fn link_init_and_configure() -> Arc<LinkConfig> {
+    let matches = link_get_arguments();
 
     let ivy_bus = matches.value_of("ivy_bus").unwrap_or(
         "127.255.255.255:2010",
@@ -240,6 +259,15 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
 
 	let name = matches.value_of("name").unwrap_or("");
 	println!("Rustlink name: {}", name);
+	
+	let ac_name = matches.value_of("ac_name");
+	println!("Value for aircraft name: {:?}", ac_name);
+
+	let gec_enabled = match matches.occurrences_of("crypto") {
+        0 => false,
+        1 | _ => true,
+    };
+	println!("Enable GEC: {}", gec_enabled);
 
     let pprz_root = match env::var("PAPARAZZI_SRC") {
         Ok(var) => var,
@@ -247,6 +275,32 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
             panic!("Error getting PAPARAZZI_SRC environment variable: {}", e);
         }
     };
+
+
+// We will iterate through the references to the element returned by
+// env::vars();
+for (key, value) in env::vars() {
+    println!("{}: {}", key, value);
+}
+/*
+	// check if we have AC name
+	if let Some(ac) = ac_name {
+		// open the aircraft.h file to get the AC_ID
+		let targets = vec!["ap","nps"];
+		let mut airfame_file = None;
+		let mut keys_file = None;
+		for target in targets {
+			let ac_file = pprz_root.clone() + "/var/aircrafts/" + ac + target + "generated/airframe.h";
+			airfame_file = match File::open(ac_file) {
+				Ok(f) => Some(f),
+				Err(_) => continue,
+			};
+		}
+	}
+	println!("done");
+*/
+
+	
 	
 	Arc::new(LinkConfig {
 		ping_period: ping_period,
