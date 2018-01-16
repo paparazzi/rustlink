@@ -319,7 +319,7 @@ pub fn link_update_status(
         match field.name.as_ref() {
             "ac_id" => {
                 // this is AC_ID, we can leave blank for now TODO: has to match the AC id
-                field.value = PprzMsgBaseType::String(String::from("1"));
+                field.value = PprzMsgBaseType::String(String::from("2"));
             }
             "link_id" => {
                 // link ID will be -1 unless we explicitly set it

@@ -13,8 +13,6 @@ use comms::*;
 use configs::*;
 use ivy::*;
 
-use ivyrust::IvyMessage;
-
 use std::{thread, time};
 
 use std::error::Error;
@@ -93,9 +91,11 @@ fn thread_main(
         .expect("Ping message not found").id;
     
     // initialize ivy global callback struct
-    let mut ivy_cb = IvyMessage::new();
-    // subsribe to all ivy messages coming from "sender_id"
-    ivy_cb.ivy_bind_msg(IvyMessage::callback, String::from("^") + &config.sender_id + " (.*)");
+    //let mut ivy_cb = IvyMessage::new();
+    // subsribe to all ivy messages coming from "^sender_id (.*)"
+    // NOTE: this will strip the sender_id from the incoming data string and the rest as one element string vector
+    //ivy_cb.ivy_bind_msg(IvyMessage::callback, String::from("^") + &config.sender_id + " (.*)");
+    //let ivy_cb = LinkIvySubscriber::new(Arc::clone(&dictionary), Arc::clone(&msg_queue), &config.sender_id);
     
     // initialize an emty buffer
     let mut buf = [0; 255]; // still have to manually allocate an array
@@ -104,12 +104,16 @@ fn thread_main(
     // get debug time
     let debug_time = RustlinkTime::new();
 
-    loop {  
+    loop {
+// >> TODO: move to send messages -> move to MIO library?
+    	// TODO: ivy callback to contain msg_queue and dictionary, so it can be updated
+    	// within the callback and not in the main loop
     	// TODO: refactor msg sending so it can handle priority/encryption
             // process messages from the queue and encrypt them before sending
             let mut lock = msg_queue.lock();
             if let Ok(ref mut msg_queue) = lock {
                 // process ivy_messages first, and push them into the message queue
+                /*
 		    	let mut ivy_lock = ivy_cb.data.lock();
 			    if let Ok(ref mut ivy_msgs) = ivy_lock {
 					while !ivy_msgs.is_empty() {
@@ -131,6 +135,7 @@ fn thread_main(
 						ivy_msgs.pop();
 					}
 			    }
+			    */
                 
                 while !msg_queue.is_empty() {
                     // get a message from the front of the queue
@@ -164,7 +169,7 @@ fn thread_main(
                 }
             }
 
-
+// >> TODO: move to read_messages()
         // read data (no timeout right now)
         let len = match port.com_read(&mut buf[..]) {
             Ok(len) => len,
@@ -199,6 +204,7 @@ fn thread_main(
             } // end parse byte
         } // end for idx in 0..len
 
+// >> TODO: move to status_report_periodic()
         // update status & send status message if needed
         // only if the period is non-zero
         if config.status_period != 0 {
@@ -297,6 +303,12 @@ fn main() {
     } else {
         println!("Main thread finished");
     });
+    
+    // bind global ivy callback
+    let dict = Arc::clone(&dictionary);
+    let queue = Arc::clone(&msg_queue);
+    let mut ivy_cb = LinkIvySubscriber::new(dict, queue, &config.sender_id);
+    ivy_cb.ivy_bind_to_sender(LinkIvySubscriber::ivy_callback, String::from("^") + &config.sender_id + " (.*)");
 
     // ping periodic (only if the ping period is non-zero
     if config.ping_period != 0 {

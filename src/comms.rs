@@ -19,7 +19,7 @@ use serial::prelude::*;
 use pprzlink::parser::{PprzProtocolVersion,PprzMsgClassID};
 
 
-
+/// Structure holding configuration details
 pub struct LinkConfig {
 	/// [ms]
 	pub ping_period: u64,
