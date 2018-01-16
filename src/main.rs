@@ -3,6 +3,8 @@ extern crate ivyrust;
 extern crate pprzlink;
 extern crate rand;
 extern crate libc;
+extern crate regex;
+
 
 
 mod comms;
@@ -64,7 +66,7 @@ fn thread_main(
     
     let mut port = match LinkComm::new(Arc::clone(&config)) {
     	Ok(p) => p,
-    	Err(e) => panic!("{}: Comm initialization failed: {}", config.name, e),
+    	Err(e) => panic!("{}: Comm initialization failed: {}", config.link_name, e),
     };
 
     // initialize variables in LINK_REPORT
@@ -160,7 +162,7 @@ fn thread_main(
                     if len != tx.buf.len() {
                         println!(
                             "{}: {} Written {} bytes, but the message was {} bytes",
-                            config.name,
+                            config.link_name,
                             debug_time.elapsed(),
                             len,
                             tx.buf.len()

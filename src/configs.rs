@@ -12,11 +12,17 @@ use std::ffi::OsString;
 
 use std::fs::File;
 
+use std::io::BufReader;
+
+use std::io::BufRead;
+
 use pprzlink::parser::{PprzProtocolVersion,PprzDictionary,PprzMessage,PprzMsgBaseType,build_dictionary, PprzMsgClassID};
 
 use std::collections::VecDeque;
 
 use std::time::{Instant, Duration};
+
+use regex::Regex;
 
 
 /// Initialize the message queue
@@ -152,9 +158,8 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
                 .takes_value(true),
         )
         .arg(
-            Arg::with_name("name")
-                .short("n")
-                .value_name("name")
+            Arg::with_name("link_name")
+                .value_name("link name")
                 .help(
                     "Program name, for debugging purposes",
                 )
@@ -162,9 +167,16 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
         )
         .arg(
             Arg::with_name("ac_name")
-                .short("a")
+                .short("n")
                 .value_name("aircraft name")
-                .help("Name of the aircraft (to find keys_gcs.h and aircraft.h). Can be empty.")
+                .help("Name of the aircraft (to find keys_gcs.h). Can be empty, unless 'crypto' is enabled.")
+                .takes_value(true),
+		)
+        .arg(
+            Arg::with_name("ac_id")
+                .short("a")
+                .value_name("aircraft ID")
+                .help("ID for the aircraft. Has to be specified.")
                 .takes_value(true),
 		)
         .arg(
@@ -257,11 +269,16 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 	let sender_id = matches.value_of("sender_id").unwrap_or("ground_dl");
 	println!("Sender id: {}", sender_id);
 
-	let name = matches.value_of("name").unwrap_or("");
-	println!("Rustlink name: {}", name);
+	let link_name = matches.value_of("name").unwrap_or("");
+	println!("Link name: {}", link_name);
 	
 	let ac_name = matches.value_of("ac_name");
 	println!("Value for aircraft name: {:?}", ac_name);
+
+	let ac_id = matches.value_of("ac_id").expect("AC_ID not specified");
+	let ac_id = ac_id.parse::<u8>().expect("AC_ID cannot be parsed. Make sure it is between 1 and 254");
+	println!("Value for aircraft ID: {}", ac_id);
+
 
 	let gec_enabled = match matches.occurrences_of("crypto") {
         0 => false,
@@ -277,28 +294,114 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
     };
 
 
-// We will iterate through the references to the element returned by
-// env::vars();
-for (key, value) in env::vars() {
-    println!("{}: {}", key, value);
-}
-/*
-	// check if we have AC name
-	if let Some(ac) = ac_name {
-		// open the aircraft.h file to get the AC_ID
-		let targets = vec!["ap","nps"];
-		let mut airfame_file = None;
-		let mut keys_file = None;
-		for target in targets {
-			let ac_file = pprz_root.clone() + "/var/aircrafts/" + ac + target + "generated/airframe.h";
-			airfame_file = match File::open(ac_file) {
-				Ok(f) => Some(f),
-				Err(_) => continue,
-			};
-		}
+	if gec_enabled {
+		let targets = vec!["/ap/","/nps/"];
+		// check if we have AC name
+		match ac_name {
+			Some(ac) => {
+				// go through both nps and ap targets and look for the keys
+				let ac_file = pprz_root.clone() + "/var/aircrafts/" + ac + targets[0]  + "generated/keys_gcs.h";
+				println!("Opening {}",ac_file);
+				let file = match File::open(ac_file) {
+					Ok(f) => f,
+					Err(_) => {
+						let ac_file = pprz_root.clone() + "/var/aircrafts/" + ac + targets[1]  + "generated/keys_gcs.h";
+						println!("Opening {}",ac_file);
+						match File::open(ac_file) {
+							Ok(nf) => nf,
+							Err(e) => panic!("Can't open keys_gcs.h: {}",e),
+						}
+					}
+				};
+				let file = BufReader::new(&file);
+				// read data here
+				let pattern_my_pubkey = String::from("#define GCS_PUBLIC") + " .*";
+			    let re_p_a = Regex::new(&pattern_my_pubkey).unwrap();
+			    let pattern_my_privkey = String::from("#define GCS_PRIVATE") + " .*";
+			    let re_q_a = Regex::new(&pattern_my_privkey).unwrap();
+			    let pattern_their_pubkey = String::from("#define UAV_PUBLIC") + " .*";
+				let re_p_b = Regex::new(&pattern_their_pubkey).unwrap();
+				
+				// initialize asymetric keys
+			    let mut p_a: [u8; 32] = [0; 32];
+			    let mut q_a: [u8; 32] = [0; 32];
+			    let mut p_b: [u8; 32] = [0; 32];
+
+			    for (_, line) in file.lines().enumerate() {
+			        let line = line.expect("Cannot read line from the keys_gcs.h file");
+			        if re_p_a.is_match(&line) {
+			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+			            let data = data.pop().unwrap();
+			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+			
+			            let mut idx = 0;
+			            for value in data {
+			                match value.parse::<u8>() {
+			                    Ok(v) => {
+			                        p_a[idx] = v;
+			                        idx = idx + 1;
+			                    }
+			                    Err(_) => {
+			                    	// ignore parse errors
+			                        continue;
+			                    }
+			                }
+			            }
+			            continue;
+			        }
+			
+			        let mut idx = 0;
+			        if re_q_a.is_match(&line) {
+			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+			            let data = data.pop().unwrap();
+			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+			
+			            for value in data {
+			                match value.parse::<u8>() {
+			                    Ok(v) => {
+			                        q_a[idx] = v;
+			                        idx = idx + 1;
+			                    }
+			                    Err(_) => {
+			                    	// ignore parse errors
+			                        continue;
+			                    }
+			                }
+			            }
+			            continue;
+			        }
+			
+			        let mut idx = 0;
+			        if re_p_b.is_match(&line) {
+			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+			            let data = data.pop().unwrap();
+			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+			
+			            for value in data {
+			                match value.parse::<u8>() {
+			                    Ok(v) => {
+			                        p_b[idx] = v;
+			                        idx = idx + 1;
+			                    }
+			                    Err(_) => {
+			                    	// ignore parse errors
+			                        continue;
+			                    }
+			                }
+			            }
+			            continue;
+			        }
+				}
+			    assert!(p_a.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "P_a must not be zero");
+			    assert!(q_a.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "Q_a must not be zero");
+			    assert!(p_b.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "P_b must not be zero");
+			},
+			None => panic!("Error: Encryption enabled, bud no aircraft name specified. Use '-n @AIRCRAFT' Exiting."),
+		};
+		
+		// initialize the GEC struct 
 	}
-	println!("done");
-*/
+
 
 	
 	
@@ -316,8 +419,9 @@ for (key, value) in env::vars() {
 		remote_addr: remote_addr,
 		sender_id: String::from(sender_id),
 		rx_msg_class: rx_msg_class,
-		name: String::from(name),
+		link_name: String::from(link_name),
 		udp_broadcast: udp_broadcast,
+		ac_id: ac_id,
 	})
 }
 
