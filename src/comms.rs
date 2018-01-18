@@ -1,5 +1,7 @@
 extern crate serial;
 
+use gec::*;
+
 use std::net::{SocketAddr, UdpSocket};
 
 use std::io::ErrorKind as IOErrorKind;
@@ -51,6 +53,8 @@ pub struct LinkConfig {
 	pub udp_broadcast: bool,
 	/// AC_ID
 	pub ac_id: u8,
+	/// Galois Embedded Crypto struct (if crypto enabled)
+	pub gec: Option<GecSts>,
 }
 
 

@@ -4,12 +4,13 @@ extern crate pprzlink;
 extern crate rand;
 extern crate libc;
 extern crate regex;
-
+extern crate rusthacl;
 
 
 mod comms;
 mod configs;
 mod ivy;
+mod gec;
 
 use comms::*;
 use configs::*;
@@ -28,11 +29,6 @@ use pprzlink::parser::{PprzDictionary, PprzMessage};
 use pprzlink::transport::PprzTransport;
 
 use time::*;
-
-// FOR GEC COMMS
-//use std::io::BufReader;
-//use rand::Rng;
-//use rand::os::OsRng;
 
 
 #[allow(dead_code)]
@@ -91,14 +87,7 @@ fn thread_main(
     let ping_msg_id = dictionary
         .find_msg_by_name("PING")
         .expect("Ping message not found").id;
-    
-    // initialize ivy global callback struct
-    //let mut ivy_cb = IvyMessage::new();
-    // subsribe to all ivy messages coming from "^sender_id (.*)"
-    // NOTE: this will strip the sender_id from the incoming data string and the rest as one element string vector
-    //ivy_cb.ivy_bind_msg(IvyMessage::callback, String::from("^") + &config.sender_id + " (.*)");
-    //let ivy_cb = LinkIvySubscriber::new(Arc::clone(&dictionary), Arc::clone(&msg_queue), &config.sender_id);
-    
+
     // initialize an emty buffer
     let mut buf = [0; 255]; // still have to manually allocate an array
     let mut rx = PprzTransport::new();
@@ -114,31 +103,6 @@ fn thread_main(
             // process messages from the queue and encrypt them before sending
             let mut lock = msg_queue.lock();
             if let Ok(ref mut msg_queue) = lock {
-                // process ivy_messages first, and push them into the message queue
-                /*
-		    	let mut ivy_lock = ivy_cb.data.lock();
-			    if let Ok(ref mut ivy_msgs) = ivy_lock {
-					while !ivy_msgs.is_empty() {
-						{
-							let mut values: Vec<&str> = ivy_msgs[0][0].split(&[' ', ','][..]).collect();
-							values.insert(0,&config.sender_id); // the parser expects a sender field
-	
-							match dictionary.find_msg_by_name(values[1]) {
-						        Some(mut msg) => {
-						        	msg.update_from_string(&values);
-						        	// append at the end (no priority)
-						        	msg_queue.push_back(msg);
-						        }
-						        None => {
-							        println!("{} Message not found: {}",config.name, &ivy_msgs[0][0]);
-							    }
-							}
-						}
-						ivy_msgs.pop();
-					}
-			    }
-			    */
-                
                 while !msg_queue.is_empty() {
                     // get a message from the front of the queue
                     let new_msg = msg_queue.pop_front().unwrap();
@@ -179,14 +143,31 @@ fn thread_main(
         };
         status_report.rx_bytes += len;
 
-        // parse received data and optionally send a message
+		status_report.rx_msgs += process_incoming_messages(buf, dictionary, config);
+
+        // update status & send status message if needed
+        // only if the period is non-zero
+        if config.status_period != 0 {
+	        if status_report_timer.elapsed() >= status_report_period {
+	            report_msg = link_update_status(report_msg, &mut status_report, status_report_period, ping_cb.ping_time_ema);
+	            status_report_timer = Instant::now();
+	        }	
+        }
+    } // end-loop
+}
+
+
+/// process new data, return number of new messages
+fn process_incoming_messages(buf: &[u8], dictionary: PprzDictionary, config: LinkConfig) -> usize {
+	let mut new_msgs = 0;
+	        // parse received data and optionally send a message
         for idx in 0..len {
             if rx.parse_byte(buf[idx]) {
                 //
                 //  REGULAR COMMUNICATION
                 //
                 // let buf = parse_incoming_messages(buf);                     
-                status_report.rx_msgs += 1;
+                new_msgs += 1;
                 let name = dictionary
                     .get_msg_name(
                     	config.rx_msg_class,
@@ -205,29 +186,8 @@ fn thread_main(
                 ivyrust::ivy_send_msg(msg.to_string().unwrap());
             } // end parse byte
         } // end for idx in 0..len
-
-// >> TODO: move to status_report_periodic()
-        // update status & send status message if needed
-        // only if the period is non-zero
-        if config.status_period != 0 {
-	        if status_report_timer.elapsed() >= status_report_period {
-	            report_msg = link_update_status(report_msg, 
-								            	&mut status_report,
-									            status_report_period,
-									            ping_cb.ping_time_ema);
-			    // time is up, send the report
-				let mut s = report_msg.to_string().unwrap();
-			    s.remove(0);
-			    s.insert_str(0, "link");
-			    ivyrust::ivy_send_msg(s);
-	
-	            // reset the timer
-	            status_report_timer = Instant::now();
-	        }	
-        }
-    } // end-loop
+        new_msgs
 }
-
 
 /// Send PING message
 ///

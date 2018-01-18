@@ -1,6 +1,7 @@
 extern crate clap;
 
 use comms::*;
+use gec::*;
 use self::clap::{Arg, App};
 
 use std::env;
@@ -24,6 +25,7 @@ use std::time::{Instant, Duration};
 
 use regex::Regex;
 
+use ivyrust::ivy_send_msg;
 
 /// Initialize the message queue
 pub fn link_build_msg_queue() -> Arc<Mutex<VecDeque<PprzMessage>>> {
@@ -191,6 +193,118 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
         .get_matches()
 }
 
+
+/// Load generated encryption keys from a file
+fn link_load_keys(pprz_root: String, ac_name: Option<&str>) -> GecSts {
+	let targets = vec!["/ap/","/nps/"];
+	// initialize asymetric keys
+	let mut p_a: [u8; 32] = [0; 32];
+	let mut q_a: [u8; 32] = [0; 32];
+	let mut p_b: [u8; 32] = [0; 32];
+		// check if we have AC name
+		match ac_name {
+			Some(ac) => {
+				// go through both nps and ap targets and look for the keys
+				let ac_file = pprz_root.clone() + "/var/aircrafts/" + ac + targets[0]  + "generated/keys_gcs.h";
+				println!("Opening {}",ac_file);
+				let file = match File::open(ac_file) {
+					Ok(f) => f,
+					Err(_) => {
+						let ac_file = pprz_root.clone() + "/var/aircrafts/" + ac + targets[1]  + "generated/keys_gcs.h";
+						println!("Opening {}",ac_file);
+						match File::open(ac_file) {
+							Ok(nf) => nf,
+							Err(e) => panic!("Can't open keys_gcs.h: {}",e),
+						}
+					}
+				};
+				let file = BufReader::new(&file);
+				// read data here
+				let pattern_my_pubkey = String::from("#define GCS_PUBLIC") + " .*";
+			    let re_p_a = Regex::new(&pattern_my_pubkey).unwrap();
+			    let pattern_my_privkey = String::from("#define GCS_PRIVATE") + " .*";
+			    let re_q_a = Regex::new(&pattern_my_privkey).unwrap();
+			    let pattern_their_pubkey = String::from("#define UAV_PUBLIC") + " .*";
+				let re_p_b = Regex::new(&pattern_their_pubkey).unwrap();
+				
+
+
+			    for (_, line) in file.lines().enumerate() {
+			        let line = line.expect("Cannot read line from the keys_gcs.h file");
+			        if re_p_a.is_match(&line) {
+			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+			            let data = data.pop().unwrap();
+			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+			
+			            let mut idx = 0;
+			            for value in data {
+			                match value.parse::<u8>() {
+			                    Ok(v) => {
+			                        p_a[idx] = v;
+			                        idx = idx + 1;
+			                    }
+			                    Err(_) => {
+			                    	// ignore parse errors
+			                        continue;
+			                    }
+			                }
+			            }
+			            continue;
+			        }
+			
+			        let mut idx = 0;
+			        if re_q_a.is_match(&line) {
+			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+			            let data = data.pop().unwrap();
+			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+			
+			            for value in data {
+			                match value.parse::<u8>() {
+			                    Ok(v) => {
+			                        q_a[idx] = v;
+			                        idx = idx + 1;
+			                    }
+			                    Err(_) => {
+			                    	// ignore parse errors
+			                        continue;
+			                    }
+			                }
+			            }
+			            continue;
+			        }
+			
+			        let mut idx = 0;
+			        if re_p_b.is_match(&line) {
+			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
+			            let data = data.pop().unwrap();
+			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
+			
+			            for value in data {
+			                match value.parse::<u8>() {
+			                    Ok(v) => {
+			                        p_b[idx] = v;
+			                        idx = idx + 1;
+			                    }
+			                    Err(_) => {
+			                    	// ignore parse errors
+			                        continue;
+			                    }
+			                }
+			            }
+			            continue;
+			        }
+				}
+			    assert!(p_a.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "P_a must not be zero");
+			    assert!(q_a.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "Q_a must not be zero");
+			    assert!(p_b.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "P_b must not be zero");
+			},
+			None => panic!("Error: Encryption enabled, bud no aircraft name specified. Use '-n @AIRCRAFT' Exiting."),
+		};
+		
+		// initialize the GEC struct
+		GecSts::new(&p_a, &q_a, &p_b)
+}
+
 /// Take command line arguments and create a LinkCondig struct
 pub fn link_init_and_configure() -> Arc<LinkConfig> {
     let matches = link_get_arguments();
@@ -293,117 +407,10 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
         }
     };
 
-
-	if gec_enabled {
-		let targets = vec!["/ap/","/nps/"];
-		// check if we have AC name
-		match ac_name {
-			Some(ac) => {
-				// go through both nps and ap targets and look for the keys
-				let ac_file = pprz_root.clone() + "/var/aircrafts/" + ac + targets[0]  + "generated/keys_gcs.h";
-				println!("Opening {}",ac_file);
-				let file = match File::open(ac_file) {
-					Ok(f) => f,
-					Err(_) => {
-						let ac_file = pprz_root.clone() + "/var/aircrafts/" + ac + targets[1]  + "generated/keys_gcs.h";
-						println!("Opening {}",ac_file);
-						match File::open(ac_file) {
-							Ok(nf) => nf,
-							Err(e) => panic!("Can't open keys_gcs.h: {}",e),
-						}
-					}
-				};
-				let file = BufReader::new(&file);
-				// read data here
-				let pattern_my_pubkey = String::from("#define GCS_PUBLIC") + " .*";
-			    let re_p_a = Regex::new(&pattern_my_pubkey).unwrap();
-			    let pattern_my_privkey = String::from("#define GCS_PRIVATE") + " .*";
-			    let re_q_a = Regex::new(&pattern_my_privkey).unwrap();
-			    let pattern_their_pubkey = String::from("#define UAV_PUBLIC") + " .*";
-				let re_p_b = Regex::new(&pattern_their_pubkey).unwrap();
-				
-				// initialize asymetric keys
-			    let mut p_a: [u8; 32] = [0; 32];
-			    let mut q_a: [u8; 32] = [0; 32];
-			    let mut p_b: [u8; 32] = [0; 32];
-
-			    for (_, line) in file.lines().enumerate() {
-			        let line = line.expect("Cannot read line from the keys_gcs.h file");
-			        if re_p_a.is_match(&line) {
-			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
-			            let data = data.pop().unwrap();
-			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
-			
-			            let mut idx = 0;
-			            for value in data {
-			                match value.parse::<u8>() {
-			                    Ok(v) => {
-			                        p_a[idx] = v;
-			                        idx = idx + 1;
-			                    }
-			                    Err(_) => {
-			                    	// ignore parse errors
-			                        continue;
-			                    }
-			                }
-			            }
-			            continue;
-			        }
-			
-			        let mut idx = 0;
-			        if re_q_a.is_match(&line) {
-			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
-			            let data = data.pop().unwrap();
-			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
-			
-			            for value in data {
-			                match value.parse::<u8>() {
-			                    Ok(v) => {
-			                        q_a[idx] = v;
-			                        idx = idx + 1;
-			                    }
-			                    Err(_) => {
-			                    	// ignore parse errors
-			                        continue;
-			                    }
-			                }
-			            }
-			            continue;
-			        }
-			
-			        let mut idx = 0;
-			        if re_p_b.is_match(&line) {
-			            let mut data: Vec<&str> = line.split(|c| c == ' ').collect();
-			            let data = data.pop().unwrap();
-			            let mut data: Vec<&str> = data.split(|c| c == ',' || c == '{' || c == '}').collect();
-			
-			            for value in data {
-			                match value.parse::<u8>() {
-			                    Ok(v) => {
-			                        p_b[idx] = v;
-			                        idx = idx + 1;
-			                    }
-			                    Err(_) => {
-			                    	// ignore parse errors
-			                        continue;
-			                    }
-			                }
-			            }
-			            continue;
-			        }
-				}
-			    assert!(p_a.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "P_a must not be zero");
-			    assert!(q_a.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "Q_a must not be zero");
-			    assert!(p_b.iter().fold(0 as u16, |mut sum, &x| {sum += x as u16; sum}) > 0, "P_b must not be zero");
-			},
-			None => panic!("Error: Encryption enabled, bud no aircraft name specified. Use '-n @AIRCRAFT' Exiting."),
-		};
-		
-		// initialize the GEC struct 
-	}
-
-
-	
+	let gec = match gec_enabled {
+		true => Some(link_load_keys(pprz_root.clone(), ac_name)),
+		false => None,
+	};
 	
 	Arc::new(LinkConfig {
 		ping_period: ping_period,
@@ -422,6 +429,7 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 		link_name: String::from(link_name),
 		udp_broadcast: udp_broadcast,
 		ac_id: ac_id,
+		gec: gec,
 	})
 }
 
@@ -534,6 +542,13 @@ pub fn link_update_status(
     status_report.last_tx_bytes = status_report.tx_bytes;
     status_report.last_rx_msgs = status_report.rx_msgs;
     status_report.last_tx_msgs = status_report.tx_msgs;
+    
+    // time is up, send the report
+	let mut s = msg.to_string().unwrap();
+	s.remove(0);
+	s.insert_str(0, "link");
+	ivy_send_msg(s);
 
+	// return the updated message
     msg
 }
