@@ -26,7 +26,7 @@ use std::collections::VecDeque;
 
 use pprzlink::parser::{PprzDictionary, PprzMessage, PprzMsgClassID};
 use pprzlink::transport::PprzTransport;
-use pprzlink::secure_transport::{SecurePprzTransport, StsParty, StsStage};
+use pprzlink::secure_transport::{SecurePprzTransport, StsParty};
 
 use time::*;
 
@@ -74,9 +74,6 @@ fn thread_main_secure(
     trans.their_public_key.set(&config.p_b).unwrap();
     trans.dictionary = Some(dictionary.clone());
     trans.set_msg_class(PprzMsgClassID::Telemetry);
-
-    // init to the first stage
-    assert!(trans.construct_pprz_msg(&vec![]) == None);
 
     // initialize an emty buffer
     let mut buf = [0; 255]; // still have to manually allocate an array
@@ -214,7 +211,6 @@ fn thread_main(
 
     // use regular transport
     let mut rx = PprzTransport::new();
-    let mut tx = PprzTransport::new();
 
     // get debug time
     let debug_time = RustlinkTime::new();
