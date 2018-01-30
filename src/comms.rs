@@ -1,7 +1,5 @@
 extern crate serial;
 
-use gec::*;
-
 use std::net::{SocketAddr, UdpSocket};
 
 use std::io::ErrorKind as IOErrorKind;
@@ -53,8 +51,14 @@ pub struct LinkConfig {
 	pub udp_broadcast: bool,
 	/// AC_ID
 	pub ac_id: u8,
-	/// Galois Embedded Crypto struct (if crypto enabled)
-	pub gec: Option<GecSts>,
+	/// Encryption keys: my private Q_A
+	pub q_a: Vec<u8>,
+	/// Encryption keys: my public P_A
+	pub p_a: Vec<u8>,
+	/// Encryption keys: their public P_B
+	pub p_b: Vec<u8>,
+	/// Enabled Galois Embedded Crypto
+	pub gec_enabled: bool,
 }
 
 
@@ -138,7 +142,7 @@ impl LinkComm {
 	}
 	
 	/// write data from buffer to the device
-	pub fn com_write(&mut self, buf: &mut [u8]) -> Result<usize, IOError> {
+	pub fn com_write(&mut self, buf: &[u8]) -> Result<usize, IOError> {
 		match self.com_type {
 			LinkCommType::Serial => {
 				match self.port {

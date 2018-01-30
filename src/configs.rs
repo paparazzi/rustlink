@@ -1,7 +1,6 @@
 extern crate clap;
 
 use comms::*;
-use gec::*;
 use self::clap::{Arg, App};
 
 use std::env;
@@ -195,7 +194,7 @@ Default is Telemetry, possible options are Datalink, Ground, Alert, Intermcu",
 
 
 /// Load generated encryption keys from a file
-fn link_load_keys(pprz_root: String, ac_name: Option<&str>) -> GecSts {
+fn link_load_keys(pprz_root: String, ac_name: Option<&str>) -> (Vec<u8>, Vec<u8>, Vec<u8>)  {
 	let targets = vec!["/ap/","/nps/"];
 	// initialize asymetric keys
 	let mut p_a: [u8; 32] = [0; 32];
@@ -300,9 +299,16 @@ fn link_load_keys(pprz_root: String, ac_name: Option<&str>) -> GecSts {
 			},
 			None => panic!("Error: Encryption enabled, bud no aircraft name specified. Use '-n @AIRCRAFT' Exiting."),
 		};
-		
-		// initialize the GEC struct
-		GecSts::new(&p_a, &q_a, &p_b)
+
+		let mut vec_q_a = vec![];
+		let mut vec_p_a = vec![];
+		let mut vec_p_b = vec![];
+
+		vec_q_a.extend_from_slice(&q_a);
+		vec_p_a.extend_from_slice(&p_a);
+		vec_p_b.extend_from_slice(&p_b);
+		// return the keys
+		(vec_q_a, vec_p_a, vec_p_b)
 }
 
 /// Take command line arguments and create a LinkCondig struct
@@ -407,9 +413,19 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
         }
     };
 
-	let gec = match gec_enabled {
-		true => Some(link_load_keys(pprz_root.clone(), ac_name)),
-		false => None,
+	let q_a;
+	let p_a;
+	let p_b;
+	if  gec_enabled {
+		let keys = link_load_keys(pprz_root.clone(), ac_name);
+		q_a = keys.0;
+		p_a = keys.1;
+		p_b = keys.2;
+		
+	} else {
+		q_a = vec![];
+		p_a = vec![];
+		p_b = vec![];
 	};
 	
 	Arc::new(LinkConfig {
@@ -429,7 +445,10 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
 		link_name: String::from(link_name),
 		udp_broadcast: udp_broadcast,
 		ac_id: ac_id,
-		gec: gec,
+		q_a: q_a,
+		p_a: p_a,
+		p_b: p_b,
+		gec_enabled: gec_enabled,
 	})
 }
 
@@ -444,6 +463,21 @@ pub struct RustlinkStatusReport {
     pub last_rx_bytes: usize,
     pub last_rx_msgs: usize,
     pub last_tx_msgs: usize,
+}
+
+impl RustlinkStatusReport {
+	pub fn new() -> RustlinkStatusReport {
+		RustlinkStatusReport {
+        tx_bytes: 0,
+        rx_bytes: 0,
+        rx_msgs: 0,
+        tx_msgs: 0,
+        last_tx_bytes: 0,
+        last_rx_bytes: 0,
+        last_rx_msgs: 0,
+        last_tx_msgs: 0,
+	    }
+	}
 }
 
 /// Convenience time structure
