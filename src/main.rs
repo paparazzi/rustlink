@@ -95,14 +95,15 @@ fn thread_main_secure(
                     ping_cb.reset();
                 }
 
+				//println!("Sts stage: {:?}", trans.get_stage());
+
                 // attempt to construct a message
                 let msg = match trans.construct_pprz_msg(&new_msg.to_bytes()) {
                     Some(msg) => msg,
                     None => vec![],
                 };
-                
-                println!("Sts stage: {:?}", trans.get_stage());
 
+				//println!("Sending message: {:?}", msg);
                 let len = port.com_write(msg.as_slice())?;
                 status_report.tx_bytes += len;
                 status_report.tx_msgs += 1;
@@ -124,10 +125,13 @@ fn thread_main_secure(
             Err(_) => continue,
         };
         status_report.rx_bytes += len;
+        //println!("just got {} bytes",len);
+        //println!("here is my original buffer: {:?}",&buf[0..len]);
 
         for byte in &buf[0..len] {
             if let Some(msg) = trans.parse_byte(*byte) {
                 status_report.rx_msgs += 1;
+				println!("received new message!, total = {}",status_report.rx_msgs);
 
                 let name = dictionary
                     .get_msg_name(
@@ -138,6 +142,9 @@ fn thread_main_secure(
                 let mut new_msg = dictionary.find_msg_by_name(&name).expect(
                     "thread main: no message found",
                 );
+                
+                println!("Message original: {}",new_msg.to_string().unwrap());
+				
 
                 // update message fields with real values
                 new_msg.update(&msg);
@@ -147,6 +154,7 @@ fn thread_main_secure(
                     // update time
                     ping_cb.update();
                 }
+                println!("ivy message: {}",new_msg.to_string().unwrap());
                 ivyrust::ivy_send_msg(new_msg.to_string().unwrap());
             }
         } // end for idx in 0..len
