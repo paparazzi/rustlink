@@ -131,7 +131,7 @@ fn thread_main_secure(
         for byte in &buf[0..len] {
             if let Some(msg) = trans.parse_byte(*byte) {
                 status_report.rx_msgs += 1;
-				println!("received new message!, total = {}",status_report.rx_msgs);
+				//println!("received new message!, total = {}",status_report.rx_msgs);
 
                 let name = dictionary
                     .get_msg_name(
@@ -143,9 +143,7 @@ fn thread_main_secure(
                     "thread main: no message found",
                 );
                 
-                println!("Message original: {}",new_msg.to_string().unwrap());
-				
-
+                //println!("Message original: {}",new_msg.to_string().unwrap());
                 // update message fields with real values
                 new_msg.update(&msg);
 
@@ -154,7 +152,7 @@ fn thread_main_secure(
                     // update time
                     ping_cb.update();
                 }
-                println!("ivy message: {}",new_msg.to_string().unwrap());
+                //println!("ivy message: {}",new_msg.to_string().unwrap());
                 ivyrust::ivy_send_msg(new_msg.to_string().unwrap());
             }
         } // end for idx in 0..len
