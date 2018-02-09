@@ -4,8 +4,7 @@ version = "0.2.0"
 authors = ["Michal Podhradsky <mpodhradsky@galois.com>"]
 
 [dependencies]
-#pprzlink = { git = "https://github.com/paparazzi/pprzlink-rust.git" }
-pprzlink = { path = "/home/michal/Workspace/rust_projects/pprzlink_rust" }
+pprzlink = { git = "https://github.com/paparazzi/pprzlink-rust.git" }
 ivyrust = {git = "https://github.com/paparazzi/ivy-rust" }
 clap = "2.27.1"
 serial="0.4"
