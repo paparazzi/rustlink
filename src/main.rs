@@ -74,6 +74,7 @@ fn thread_main_secure(
     trans.their_public_key.set(&config.p_b).unwrap();
     trans.dictionary = Some(dictionary.clone());
     trans.set_msg_class(PprzMsgClassID::Telemetry);
+    trans.set_pprzlink_version(config.pprzlink_version);
 
     // initialize an emty buffer
     let mut buf = [0; 255]; // still have to manually allocate an array
