@@ -1,11 +1,10 @@
-extern crate serial;
 extern crate ivyrust;
+extern crate libc;
 extern crate pprzlink;
 extern crate rand;
-extern crate libc;
 extern crate regex;
 extern crate rusthacl;
-
+extern crate serial;
 
 mod comms;
 mod configs;
@@ -30,7 +29,6 @@ use pprzlink::secure_transport::{SecurePprzTransport, StsParty};
 
 use time::*;
 
-
 #[allow(dead_code)]
 fn print_array(b: &[u8]) {
     print!("data=[");
@@ -38,7 +36,6 @@ fn print_array(b: &[u8]) {
         print!("0x{:x},", i);
     }
     println!("];");
-
 }
 
 fn thread_main_secure(
@@ -96,7 +93,7 @@ fn thread_main_secure(
                     ping_cb.reset();
                 }
 
-				//println!("Sts stage: {:?}", trans.get_stage());
+                //println!("Sts stage: {:?}", trans.get_stage());
 
                 // attempt to construct a message
                 let msg = match trans.construct_pprz_msg(&new_msg.to_bytes()) {
@@ -104,7 +101,7 @@ fn thread_main_secure(
                     None => vec![],
                 };
 
-				//println!("Sending message: {:?}", msg);
+                //println!("Sending message: {:?}", msg);
                 let len = port.com_write(msg.as_slice())?;
                 status_report.tx_bytes += len;
                 status_report.tx_msgs += 1;
@@ -132,7 +129,7 @@ fn thread_main_secure(
         for byte in &buf[0..len] {
             if let Some(msg) = trans.parse_byte(*byte) {
                 status_report.rx_msgs += 1;
-				//println!("received new message!, total = {}",status_report.rx_msgs);
+                //println!("received new message!, total = {}",status_report.rx_msgs);
 
                 let name = dictionary
                     .get_msg_name(
@@ -140,10 +137,10 @@ fn thread_main_secure(
                         PprzMessage::get_msg_id_from_buf(&msg, dictionary.protocol),
                     )
                     .expect("thread main: message name not found");
-                let mut new_msg = dictionary.find_msg_by_name(&name).expect(
-                    "thread main: no message found",
-                );
-                
+                let mut new_msg = dictionary
+                    .find_msg_by_name(&name)
+                    .expect("thread main: no message found");
+
                 //println!("Message original: {}",new_msg.to_string().unwrap());
                 // update message fields with real values
                 new_msg.update(&msg);
@@ -284,7 +281,6 @@ fn thread_main(
     } // end-loop
 }
 
-
 /// process new data, return number of new messages
 fn process_incoming_messages(
     buf: &[u8],
@@ -304,9 +300,9 @@ fn process_incoming_messages(
                     PprzMessage::get_msg_id_from_buf(&rx.buf, dictionary.protocol),
                 )
                 .expect("thread main: message name not found");
-            let mut msg = dictionary.find_msg_by_name(&name).expect(
-                "thread main: no message found",
-            );
+            let mut msg = dictionary
+                .find_msg_by_name(&name)
+                .expect("thread main: no message found");
 
             // update message fields with real values
             msg.update(&rx.buf);
@@ -332,10 +328,9 @@ fn thread_ping(
     dictionary: Arc<PprzDictionary>,
     msg_queue: Arc<Mutex<VecDeque<PprzMessage>>>,
 ) {
-
-    let ping_msg = dictionary.find_msg_by_name("PING").expect(
-        "Ping message not found",
-    );
+    let ping_msg = dictionary
+        .find_msg_by_name("PING")
+        .expect("Ping message not found");
     loop {
         // the sender ID is set to zero by default (GCS)
         // add at the beginning of the message gueue
@@ -349,7 +344,6 @@ fn thread_ping(
         thread::sleep(time::Duration::from_millis(config.ping_period));
     }
 }
-
 
 /// Main IVY loop
 ///
@@ -365,16 +359,14 @@ fn thread_ivy_main(ivy_bus: String) -> Result<(), Box<Error>> {
     ivyrust::ivy_main_loop()
 }
 
-
 fn start_ivy_main_loop(config: Arc<LinkConfig>) {
     // spin the main IVY loop
-    let _ = thread::spawn(move || if let Err(e) = thread_ivy_main(
-        config.ivy_bus.clone(),
-    )
-    {
-        println!("Error starting ivy thread: {}", e);
-    } else {
-        println!("Ivy thread finished");
+    let _ = thread::spawn(move || {
+        if let Err(e) = thread_ivy_main(config.ivy_bus.clone()) {
+            println!("Error starting ivy thread: {}", e);
+        } else {
+            println!("Ivy thread finished");
+        }
     });
 }
 
@@ -395,23 +387,22 @@ fn main() {
     let t = match config.gec_enabled {
         true => {
             // use secured datalink
-            thread::spawn(move || if let Err(e) = thread_main_secure(
-                conf,
-                dict,
-                queue,
-            )
-            {
-                println!("Error starting main thread: {}", e);
-            } else {
-                println!("Main thread finished");
+            thread::spawn(move || {
+                if let Err(e) = thread_main_secure(conf, dict, queue) {
+                    println!("Error starting main thread: {}", e);
+                } else {
+                    println!("Main thread finished");
+                }
             })
         }
         false => {
             // use regular datalink
-            thread::spawn(move || if let Err(e) = thread_main(conf, dict, queue) {
-                println!("Error starting main thread: {}", e);
-            } else {
-                println!("Main thread finished");
+            thread::spawn(move || {
+                if let Err(e) = thread_main(conf, dict, queue) {
+                    println!("Error starting main thread: {}", e);
+                } else {
+                    println!("Main thread finished");
+                }
             })
         }
     };
