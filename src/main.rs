@@ -29,6 +29,8 @@ use pprzlink::secure_transport::{SecurePprzTransport, StsParty};
 
 use time::*;
 
+const RSSI_COMBINED_MSG_ID: u8 = 39;
+
 #[allow(dead_code)]
 fn print_array(b: &[u8]) {
     print!("data=[");
@@ -72,6 +74,7 @@ fn thread_main_secure(
     trans.dictionary = Some(dictionary.clone());
     trans.set_msg_class(PprzMsgClassID::Telemetry);
     trans.set_pprzlink_version(config.pprzlink_version);
+    trans.allowed_msg_ids.push(RSSI_COMBINED_MSG_ID); // enabled RSSI_COMBINED message reception
 
     // initialize an emty buffer
     let mut buf = [0; 255]; // still have to manually allocate an array
