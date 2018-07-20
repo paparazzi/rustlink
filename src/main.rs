@@ -153,6 +153,11 @@ fn thread_main_secure(
                     // update time
                     ping_cb.update();
                 }
+                
+                // TODO:
+                // guard with a feature gate
+                // process TCP packets and publish the contents as UDP packets...
+                
                 //println!("ivy message: {}",new_msg.to_string().unwrap());
                 ivyrust::ivy_send_msg(new_msg.to_string().unwrap());
             }
@@ -172,6 +177,21 @@ fn thread_main_secure(
             }
         }
     } // end-loop
+}
+
+
+/// Passthrough of payload messages
+/// TODO: guard with a feature gate
+fn thread_payload_passthrough(
+    config: Arc<LinkConfig>,
+    dictionary: Arc<PprzDictionary>,
+    msg_queue: Arc<Mutex<VecDeque<PprzMessage>>>,
+) -> Result<(), Box<Error>> {
+    // 1 recv data from UDP socket
+    // 2 pass the data into smolctp, overhead 20 bytes Ipv4 header, 12 bytes ethernet - maybe just use TCP ?
+    // 3. create PprzMessages from the TCP packets, and cache them
+    // 4. push into msg_queue at some reasonable interval
+    Ok(())
 }
 
 /// Main serial thread
