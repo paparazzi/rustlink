@@ -27,8 +27,6 @@ use pprzlink::{PprzMessage, PprzMessageTelemetry};
 
 use transport::PprzTransport;
 
-const RSSI_COMBINED_MSG_ID: u8 = 39;
-
 #[allow(dead_code)]
 fn print_array(b: &[u8]) {
     print!("data=[");
@@ -62,12 +60,13 @@ fn thread_main(
             while !msg_queue.is_empty() {
                 // get a message from the front of the queue
                 let msg = msg_queue.pop_front().unwrap();
+                //println!("Locking ivy queue, msg = {:?}", msg);
                 if let PprzMessage::Datalink(msg) = msg {
                     println!("Ivy2Serial=> Sending msg: {:?}",msg);
 
                     // get a transort
                     let mut tx = PprzTransport::new();
-                    let mut buf = msg.ser();
+                    let buf = msg.ser();
 
                     // construct a message from the transport
                     tx.construct_pprz_msg(&buf);
@@ -104,9 +103,15 @@ fn process_incoming_messages(
     for byte in buf {
         if rx.parse_byte(*byte) {
             new_msgs += 1;
+            //println!("Serial2Ivy=> Buffer: {:?}",rx.buf);
+            let sender = rx.buf.remove(0);
+            if sender != config.ac_id {
+                println!("Different sender. Expected {}, received {}", config.ac_id, sender);
+            }
             if let Some(msg) = PprzMessageTelemetry::deser(&rx.buf) {
-                println!("Serial2Ivy=> Received: {:?}",msg);
-                ivyrust::ivy_send_msg(msg.to_string());
+                //println!("Serial2Ivy=> Received: {:?}",msg);
+                let ivy_msg = config.ac_id.to_string() + " " + &msg.to_string();
+                ivyrust::ivy_send_msg(ivy_msg);
             }
         } // end parse byte
     } // end for idx in 0..len

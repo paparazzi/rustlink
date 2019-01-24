@@ -41,10 +41,11 @@ impl PprzTransport {
         self.length = 0;
         self.state = PprzParserState::WaitSTX;
     }
-
+    /*
     pub fn get_message_length(&self) -> usize {
         self.length as usize
     }
+    */
 
     /// parse new byte, return True when a new full message is available
     pub fn parse_byte(&mut self, b: u8) -> bool {

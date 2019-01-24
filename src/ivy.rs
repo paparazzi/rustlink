@@ -117,7 +117,9 @@ impl LinkIvySubscriber {
     pub fn ivy_callback(&mut self, data: Vec<String>) {
     	let mut lock = self.msg_queue.lock();
     	if let Ok(ref mut msg_queue) = lock {
-			if let Some(msg) = PprzMessage::parse_ivy_msg_from_sender(&data[0], Some(&self.sender_id)) {
+			//println!("ivy_callback: {}", &data[0]);
+			if let Some(msg) = PprzMessage::parse_ivy_msg_from_sender(&data[0], None) {
+				//println!("Parsed msg: {:?}", msg);
 				msg_queue.push_back(msg);
 			}
 	    }

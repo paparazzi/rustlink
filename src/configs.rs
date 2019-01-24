@@ -4,8 +4,6 @@ use crate::PprzMessage;
 use crate::comms::*;
 use self::clap::{Arg, App};
 
-use std::env;
-
 use std::sync::Arc;
 use std::sync::Mutex;
 
@@ -222,16 +220,6 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
     let remote_addr = String::from(matches.value_of("remote_addr").unwrap_or("127.0.0.1"));
     println!("Value for remote_addr: {}", remote_addr);
 
-    let pprzlink_version = matches.value_of("version").unwrap_or("2.0");
-    let pprzlink_version = pprzlink_version
-        .parse::<f32>()
-        .expect("Supported versions are 1.0 or 2.0");
-
-    let rx_msg_class = matches
-        .value_of("rx_msg_class")
-        .unwrap_or("Telemetry")
-        .to_lowercase();
-
     let sender_id = matches.value_of("sender_id").unwrap_or("ground_dl");
     println!("Sender id: {}", sender_id);
 
@@ -247,14 +235,6 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
         .expect("AC_ID cannot be parsed. Make sure it is between 1 and 254");
     println!("Value for aircraft ID: {}", ac_id);
 
-
-    let pprz_root = match env::var("PAPARAZZI_SRC") {
-        Ok(var) => var,
-        Err(e) => {
-            panic!("Error getting PAPARAZZI_SRC environment variable: {}", e);
-        }
-    };
-
     Arc::new(LinkConfig {
         ping_period: ping_period,
         status_period: status_period,
@@ -264,7 +244,6 @@ pub fn link_init_and_configure() -> Arc<LinkConfig> {
         udp_port: udp_port,
         udp_uplink_port: udp_uplink_port,
         ivy_bus: ivy_bus,
-        pprz_root: pprz_root,
         remote_addr: remote_addr,
         sender_id: String::from(sender_id),
         link_name: String::from(link_name),

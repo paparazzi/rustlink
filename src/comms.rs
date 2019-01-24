@@ -33,7 +33,7 @@ pub struct LinkConfig {
     /// Ivy bus address
     pub ivy_bus: String,
     /// PAPARAZZ_SRC path
-    pub pprz_root: String,
+    //pub pprz_root: String,
     /// Remote IP address (can be broadcast if the broadcast flag is specified)
     pub remote_addr: String,
     /// Sender ID
