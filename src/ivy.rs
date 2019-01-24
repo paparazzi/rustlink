@@ -12,13 +12,11 @@ use std::collections::VecDeque;
 
 use ivyrust::*;
 
-use configs::RustlinkTime;
-
-use pprzlink::parser::{PprzMessage,PprzDictionary};
+use pprzlink::PprzMessage;
 
 
 
-
+/*
 /// Structure holding data about PING time
 pub struct LinkIvyPing {
 	/// Time instant of sending PING message
@@ -97,11 +95,9 @@ impl LinkIvyPing {
     }
 }
 
-
+*/
 /// Structure for global ivy callback
 pub struct LinkIvySubscriber {
-	/// dictionary holding paparazzi messages
-	dictionary: Arc<PprzDictionary>,
 	/// message queue for paparazzi messages from Ivy bus
     msg_queue: Arc<Mutex<VecDeque<PprzMessage>>>,
     /// sender ID part of the regexpr (can be empty)
@@ -109,9 +105,8 @@ pub struct LinkIvySubscriber {
 }
 
 impl LinkIvySubscriber {
-	pub fn new(dictionary: Arc<PprzDictionary>, msg_queue: Arc<Mutex<VecDeque<PprzMessage>>>, sender_id: &String) -> LinkIvySubscriber {
+	pub fn new(msg_queue: Arc<Mutex<VecDeque<PprzMessage>>>, sender_id: &String) -> LinkIvySubscriber {
 		LinkIvySubscriber {
-			dictionary: dictionary,
 			msg_queue: msg_queue,
 			sender_id: sender_id.clone(),
 		}
@@ -122,18 +117,8 @@ impl LinkIvySubscriber {
     pub fn ivy_callback(&mut self, data: Vec<String>) {
     	let mut lock = self.msg_queue.lock();
     	if let Ok(ref mut msg_queue) = lock {
-			let mut values: Vec<&str> = data[0].split(&[' ', ','][..]).collect();
-			values.insert(0,&self.sender_id); // the parser expects a sender field
-
-			match self.dictionary.find_msg_by_name(values[1]) {
-				Some(mut msg) => {
-					msg.update_from_string(&values);
-					// append at the end (no priority)
-					msg_queue.push_back(msg);
-				}
-				None => {
-					println!("LinkIvySubscriber: Message not found: {}",&data[0]);
-				}
+			if let Some(msg) = PprzMessage::parse_ivy_msg_from_sender(&data[0], Some(&self.sender_id)) {
+				msg_queue.push_back(msg);
 			}
 	    }
     }
@@ -159,7 +144,7 @@ impl LinkIvySubscriber {
     }
 }
 
-
+/*
 #[allow(dead_code)]
 extern "C" fn apply_closure_ping(_app: IvyClientPtr,
                             user_data: *mut c_void,
@@ -178,6 +163,7 @@ extern "C" fn apply_closure_ping(_app: IvyClientPtr,
     
     payload.0(&mut payload.1, v);
 }
+*/
 
 extern "C" fn apply_closure_sender_callback(_app: IvyClientPtr,
                             user_data: *mut c_void,

@@ -16,8 +16,6 @@ use std::sync::Arc;
 
 use serial::prelude::*;
 
-use pprzlink::parser::{PprzProtocolVersion, PprzMsgClassID};
-
 /// Structure holding configuration details
 pub struct LinkConfig {
     /// [ms]
@@ -32,8 +30,6 @@ pub struct LinkConfig {
     pub udp_port: u16,
     /// uplink messages sent to here
     pub udp_uplink_port: u16,
-    /// Version of Pprzlink this link is using
-    pub pprzlink_version: PprzProtocolVersion,
     /// Ivy bus address
     pub ivy_bus: String,
     /// PAPARAZZ_SRC path
@@ -42,22 +38,12 @@ pub struct LinkConfig {
     pub remote_addr: String,
     /// Sender ID
     pub sender_id: String,
-    /// Rx message class to match against
-    pub rx_msg_class: PprzMsgClassID,
     /// Name of the program for debugging purposes
     pub link_name: String,
     /// Allow UDP broadcast
     pub udp_broadcast: bool,
     /// AC_ID
     pub ac_id: u8,
-    /// Encryption keys: my private Q_A
-    pub q_a: Vec<u8>,
-    /// Encryption keys: my public P_A
-    pub p_a: Vec<u8>,
-    /// Encryption keys: their public P_B
-    pub p_b: Vec<u8>,
-    /// Enabled Galois Embedded Crypto
-    pub gec_enabled: bool,
 }
 
 /// Configure port to given settings
